@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShowAlert</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+<!-- ── SETUP SCREEN (shown on first install) ── -->
+<div id="screenSetup" class="screen">
+
+  <!-- Branding strip -->
+  <div class="setup-brand">
+    <div class="setup-brand-glow"></div>
+    <div class="setup-logo-wrap">
+      <div class="setup-logo-ring">🎬</div>
+    </div>
+    <div class="setup-brand-text">
+      <span class="setup-app-name">Show<strong>Alert</strong></span>
+      <span class="setup-app-sub">BMS Ticket Notifier</span>
+    </div>
+  </div>
+
+  <!-- Feature pills -->
+  <div class="setup-features">
+    <div class="feat-pill"><span>🔔</span> Desktop alerts</div>
+    <div class="feat-pill"><span>📧</span> Email alerts</div>
+    <div class="feat-pill"><span>♾️</span> Multi-theatre</div>
+  </div>
+
+  <!-- One-step form -->
+  <div class="setup-card">
+    <div class="setup-card-label">Step 1 of 1 — Enter your email</div>
+    <div class="field">
+      <label>Notification Email</label>
+      <div class="email-input-wrap">
+        <span class="email-icon">✉</span>
+        <input type="email" id="setupEmail" placeholder="you@example.com" />
+      </div>
+    </div>
+    <button class="btn-primary btn-full btn-setup-go" id="btnSaveSetup">
+      Start Monitoring  →
+    </button>
+    <div class="setup-sub-note">
+      Chrome desktop notifications work immediately. Add email API keys later in <strong>⚙ Settings</strong> for inbox alerts too.
+    </div>
+  </div>
+</div>
+
+<!-- ── MAIN SCREEN ── -->
+<div id="screenMain" class="screen hidden">
+
+  <!-- Header -->
+  <div class="popup-header">
+    <div class="logo-row">
+      <div class="logo-sm">🎬</div>
+      <span class="logo-text">Show<strong>Alert</strong></span>
+    </div>
+    <div class="header-actions">
+      <div class="monitor-badge" id="monitorBadge">
+        <span class="pulse-dot"></span>
+        <span id="monitorLabel">Monitoring</span>
+      </div>
+      <button class="icon-btn" id="btnSettings" title="Settings">⚙</button>
+    </div>
+  </div>
+
+  <!-- Current page detection banner -->
+  <div id="bmsPageBanner" class="page-banner hidden">
+    <div class="banner-info">
+      <div class="banner-icon">📍</div>
+      <div>
+        <div class="banner-title" id="bannerTheatreName">Theatre detected</div>
+        <div class="banner-sub" id="bannerPageInfo">BookMyShow page</div>
+      </div>
+    </div>
+    <button class="btn-notify" id="btnNotifyMe">+ Notify Me</button>
+  </div>
+
+  <!-- Not-on-BMS hint -->
+  <div id="bmsHint" class="bms-hint hidden">
+    <span>👆</span>
+    <span>Navigate to a BookMyShow <strong>cinema page</strong> to add an alert from there, or add one manually below.</span>
+  </div>
+
+  <!-- Manual add form -->
+  <div class="manual-add" id="manualAddSection">
+    <div class="section-hdr">
+      <span class="section-title">Add Alert Manually</span>
+      <button class="toggle-btn" id="toggleManual">▾ Expand</button>
+    </div>
+    <div class="manual-form hidden" id="manualForm">
+      <div class="field">
+        <label>Theatre Code <span class="field-hint-sm">(from BMS URL, e.g. ALUC)</span></label>
+        <input type="text" id="manualCode" placeholder="e.g. ALUC" maxlength="10" />
+      </div>
+      <div class="field">
+        <label>Theatre Name</label>
+        <input type="text" id="manualName" placeholder="e.g. Allu Cinemas, Kokapet" />
+      </div>
+      <div class="field">
+        <label>City</label>
+        <input type="text" id="manualCity" placeholder="e.g. Hyderabad" />
+      </div>
+      <div class="field">
+        <label>Date <span class="field-hint-sm">(YYYYMMDD)</span></label>
+        <input type="date" id="manualDate" />
+      </div>
+      <button class="btn-primary btn-full" id="btnAddManual">+ Add Alert</button>
+    </div>
+  </div>
+
+  <!-- Alerts list -->
+  <div class="alerts-section">
+    <div class="section-hdr">
+      <span class="section-title">Active Alerts</span>
+      <span class="alert-count" id="alertCount">0</span>
+    </div>
+    <div id="alertsList" class="alerts-list">
+      <div class="empty-state">
+        <div class="empty-icon">🔕</div>
+        <div class="empty-text">No alerts yet.<br>Visit a BMS cinema page and click <strong>Notify Me</strong>.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="popup-footer">
+    <span id="footerEmail" class="footer-email"></span>
+    <button class="text-btn" id="btnClearAll">Clear all</button>
+  </div>
+</div>
+
+<!-- ── NOTIFY ME MODAL ── -->
+<div id="modalNotify" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span>🔔 New Alert</span>
+      <button class="icon-btn" id="btnModalClose">✕</button>
+    </div>
+    <div class="modal-body">
+
+      <!-- Auto-detected info (read-only) -->
+      <div class="detected-banner">
+        <div class="detected-row">
+          <span class="detected-icon">🏟️</span>
+          <div class="detected-info">
+            <div class="detected-label">Theatre — auto detected</div>
+            <div class="detected-value" id="modalTheatreName">—</div>
+          </div>
+          <span class="detected-lock">🔒</span>
+        </div>
+        <div class="detected-divider"></div>
+        <div class="detected-row">
+          <span class="detected-icon">📍</span>
+          <div class="detected-info">
+            <div class="detected-label">City — auto detected</div>
+            <div class="detected-value" id="modalCity">—</div>
+          </div>
+          <span class="detected-lock">🔒</span>
+        </div>
+        <div class="detected-divider"></div>
+        <div class="detected-row">
+          <span class="detected-icon">🔑</span>
+          <div class="detected-info">
+            <div class="detected-label">Theatre Code — from URL</div>
+            <div class="detected-value detected-code" id="modalCode">—</div>
+          </div>
+          <span class="detected-lock">🔒</span>
+        </div>
+      </div>
+
+      <!-- Only ask for date -->
+      <div class="field" style="margin-top:14px">
+        <label>Pick Alert Date</label>
+        <input type="date" id="modalDate" />
+      </div>
+
+      <div class="modal-note">
+        🔔 You'll get a Chrome notification + email the instant shows go live on this date.
+      </div>
+
+      <button class="btn-primary btn-full" id="btnConfirmAlert">Activate Alert →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── SETTINGS MODAL ── -->
+<div id="modalSettings" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span>⚙ Settings</span>
+      <button class="icon-btn" id="btnSettingsClose">✕</button>
+    </div>
+    <div class="modal-body">
+
+      <div class="field">
+        <label>Notification Email</label>
+        <input type="email" id="settingsEmail" />
+      </div>
+
+      <div class="field">
+        <label>Poll Interval</label>
+        <select id="settingsInterval">
+          <option value="1">Every 1 minute</option>
+          <option value="2">Every 2 minutes</option>
+          <option value="3" selected>Every 3 minutes</option>
+          <option value="5">Every 5 minutes</option>
+        </select>
+      </div>
+
+      <!-- Provider picker -->
+      <div class="field">
+        <label>Email Provider <span class="opt-badge">Optional</span></label>
+        <div class="provider-grid" id="providerGrid">
+          <div class="provider-card" data-p="none">
+            <div class="provider-icon">🔕</div>
+            <div class="provider-name">None</div>
+            <div class="provider-sub">Desktop only</div>
+          </div>
+          <div class="provider-card" data-p="resend">
+            <div class="provider-icon">✉️</div>
+            <div class="provider-name">Resend</div>
+            <div class="provider-sub">3k/mo · free</div>
+          </div>
+          <div class="provider-card" data-p="brevo">
+            <div class="provider-icon">📨</div>
+            <div class="provider-name">Brevo</div>
+            <div class="provider-sub">300/day · free</div>
+          </div>
+          <div class="provider-card" data-p="mailjet">
+            <div class="provider-icon">🛩️</div>
+            <div class="provider-name">Mailjet</div>
+            <div class="provider-sub">6k/mo · free</div>
+          </div>
+          <div class="provider-card" data-p="mailersend">
+            <div class="provider-icon">📬</div>
+            <div class="provider-name">MailerSend</div>
+            <div class="provider-sub">3k/mo · free</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dynamic key fields -->
+      <div id="providerFields" class="provider-fields hidden">
+        <div class="field" id="fieldApiKey">
+          <label id="labelApiKey">API Key</label>
+          <input type="password" id="settingsApiKey" placeholder="Paste your API key…" />
+        </div>
+        <div class="field hidden" id="fieldApiSecret">
+          <label>API Secret <span class="field-hint-sm">(Mailjet only)</span></label>
+          <input type="password" id="settingsApiSecret" placeholder="Paste your secret key…" />
+        </div>
+        <div class="provider-help" id="providerHelp"></div>
+      </div>
+
+      <button class="btn-primary btn-full" id="btnSaveSettings">Save Settings</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div id="toast" class="toast hidden"></div>
+
+<script src="popup.js"></script>
+</body>
+</html>
