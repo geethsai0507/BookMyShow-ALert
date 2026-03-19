@@ -154,19 +154,16 @@ async function handlePageData(data) {
     // ── Case 2: Alert date now appears as enabled in ShowDatesArray ─
     // This catches the redirect case: user visited today's page,
     // but ShowDatesArray now shows their target date is bookable.
+    // IMPORTANT FIX: We now verify actual shows exist for the target date
+    // before sending notification (don't just assume "available" means shows exist)
     if (availableDates.includes(alert.date)) {
       console.log(`[ShowAlert] ✅ Target date ${alert.date} just became bookable for ${theatreName}!`);
-      // We don't have the specific shows for that date, but we
-      // know tickets just opened. Fire with a "date opened" message.
-      const dateOpened = [{
-        movieTitle: 'Shows now available',
-        time:       '',
-        format:     '',
-        language:   '',
-        screen:     '',
-        status:     'available'
-      }];
-      await fireNotification(alert, dateOpened, true);
+      console.log(`[ShowAlert] Opening tab to verify shows exist for target date ${alert.date}`);
+      
+      // Only proceed if no shows were found on current page
+      // If shows exist on current date AND it matches target, we'd be in Case 1
+      // So we safely assume this needs verification
+      await verifyShowsForTargetDate(alert, theatreName);
       continue;
     }
 
@@ -178,6 +175,74 @@ async function handlePageData(data) {
       console.log(`[ShowAlert] Date ${alert.date} not found in ShowDatesArray for ${venueCode} — may be too far in future`);
     }
   }
+}
+
+// ═════════════════════════════════════════════════════════════
+// VERIFY SHOWS FOR TARGET DATE (NEW FIX)
+// When a date becomes available but shows for current page date
+// don't match the alert date, open a tab for the target date
+// and verify actual shows exist before notifying.
+// ═════════════════════════════════════════════════════════════
+async function verifyShowsForTargetDate(alert, theatreName) {
+  return new Promise((resolve) => {
+    // Build URL for the target date
+    const city = (alert.city || 'hyderabad').toLowerCase().replace(/\s+/g, '-');
+    const slug = (alert.theatreSlug || alert.theatreName || alert.theatreCode)
+                   .toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const targetUrl = `https://in.bookmyshow.com/cinemas/${city}/${slug}/buytickets/${alert.theatreCode}/${alert.date}`;
+    
+    chrome.tabs.create({ url: targetUrl, active: false }, (tab) => {
+      if (!tab) { 
+        console.log(`[ShowAlert] Failed to open verification tab for ${alert.theatreCode}`);
+        resolve(); 
+        return; 
+      }
+
+      const tabId = tab.id;
+      console.log(`[ShowAlert] Opened verification tab ${tabId} for target date ${alert.date}`);
+      
+      silentTabs.set(tabId, { 
+        venueCode: alert.theatreCode, 
+        openedAt: Date.now(),
+        isVerification: true,
+        alert
+      });
+
+      // Close tab after 20 seconds (safety net)
+      const closeTimer = setTimeout(() => {
+        console.log(`[ShowAlert] Verification tab ${tabId} timeout - closing`);
+        silentTabs.delete(tabId);
+        chrome.tabs.remove(tabId, () => {});
+        resolve();
+      }, 20000);
+
+      // Listen for PAGE_SHOW_DATA response with the target date's shows
+      const msgListener = (msg) => {
+        if (msg.action === 'PAGE_SHOW_DATA' && msg.venueCode === alert.theatreCode) {
+          console.log(`[ShowAlert] Verification received for ${alert.theatreCode}, shows: ${msg.shows?.length || 0}`);
+          
+          clearTimeout(closeTimer);
+          chrome.runtime.onMessage.removeListener(msgListener);
+          silentTabs.delete(tabId);
+          
+          // NOW check if actual shows exist
+          if (msg.shows && msg.shows.length > 0) {
+            console.log(`[ShowAlert] ✅ VERIFIED! Real shows found for ${alert.date}. Sending notification.`);
+            fireNotification(alert, msg.shows);
+          } else {
+            console.log(`[ShowAlert] ⚠️ Date ${alert.date} is available but NO SHOWS yet. Keeping alert active.`);
+            // Don't fire - keep the alert watching for actual shows
+          }
+          
+          setTimeout(() => {
+            chrome.tabs.remove(tabId, () => {});
+            resolve();
+          }, 500);
+        }
+      };
+      chrome.runtime.onMessage.addListener(msgListener);
+    });
+  });
 }
 
 // ═════════════════════════════════════════════════════════════
