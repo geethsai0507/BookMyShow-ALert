@@ -1,6 +1,16 @@
 # BookMyShow-ALert
 BookMyShow Alert is a Chrome extension that monitors selected BookMyShow theatre/date pages and sends instant desktop and optional email alerts the moment ticket bookings open, with one-click alert setup from the cinema page plus manual multi-theatre tracking
 
+## Community
+
+For contributors, start here:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- [SECURITY.md](SECURITY.md)
+- [Issue templates](.github/ISSUE_TEMPLATE)
+- [Pull request template](.github/PULL_REQUEST_TEMPLATE.md)
+
 # ShowAlert User Guide
 
 ## 1) Load the extension

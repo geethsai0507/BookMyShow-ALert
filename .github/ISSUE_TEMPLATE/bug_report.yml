@@ -1,0 +1,61 @@
+name: Bug report
+description: Report a reproducible problem in ShowAlert
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please provide enough detail to reproduce it.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: What is the issue?
+      placeholder: Briefly describe the bug
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include exact navigation and actions
+      placeholder: |
+        1. Open BookMyShow page...
+        2. Click Notify Me...
+        3. Observe...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: input
+    id: extension_version
+    attributes:
+      label: Extension version
+      placeholder: e.g. 1.1.0
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      placeholder: e.g. Chrome 123
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Additional context
+      description: Console logs, screenshots, and affected pages
