@@ -33,7 +33,8 @@ For contributors, start here:
 6. Optional: type a **Movie** (e.g. `Doomsday`)
 7. Choose **Any date** or a **Specific date**
 8. Choose how to be notified: **Every new date**, **Once**, or **Stop after N notifications**
-9. Click Activate Alert
+9. Choose **Notify for**: **All bookable shows** (🟢 available + 🟠 filling fast) or **Only available 🟢**
+10. Click Activate Alert
 
 Example: "Doomsday · PCX · Any date · Every new date" at Prasads tells you each time PCX opens a new date for Doomsday, and never fires for the other screens.
 Screen and movie matching ignores case and matches part of the name (`pcx` matches `PCX` and `Screen 1 - PCX`).

@@ -260,6 +260,7 @@ function resetAlertForm(prefix) {
   $(prefix + 'Screen').value = '';
   $(prefix + 'Movie').value  = '';
   $(prefix + 'Limit').value  = '3';
+  setRadio(prefix + 'SeatFilter', 'any');
   formTouched[prefix] = false;
   applyScreenDefaults(prefix);
 }
@@ -279,7 +280,8 @@ function readAlertForm(prefix) {
     dateMode,
     date:             dateMode === 'single' ? fromInputDate(dateVal) : null,
     notifyMode,
-    maxNotifications: notifyMode === 'limit' ? limit : null
+    maxNotifications: notifyMode === 'limit' ? limit : null,
+    seatFilter:       radioVal(prefix + 'SeatFilter') === 'available' ? 'available' : 'any'
   };
 }
 
@@ -330,7 +332,8 @@ async function renderAlerts() {
       a.city,
       a.screenFilter && a.screenFilter.trim().toUpperCase(),
       a.movieFilter,
-      a.dateMode === 'any' ? 'Any date' : formatDate(a.date)
+      a.dateMode === 'any' ? 'Any date' : formatDate(a.date),
+      a.seatFilter === 'available' && '🟢 only'
     ].filter(Boolean).map(esc).join(' · ');
 
     const found = [...(a.notifiedDates || [])].sort();

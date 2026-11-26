@@ -22,6 +22,7 @@
 
     a.screenFilter = a.screenFilter ?? '';
     a.movieFilter  = a.movieFilter  ?? '';
+    a.seatFilter   = a.seatFilter   ?? 'any';      // 'any' | 'available' (green only)
     a.dateMode     = a.dateMode     ?? 'single';
     a.notifyMode   = a.notifyMode   ?? 'once';
     a.maxNotifications = a.maxNotifications ?? null;
@@ -41,6 +42,7 @@
     const movie  = norm(alert.movieFilter);
     if (screen && ![show.screen, show.format, show.dimension].some(f => norm(f).includes(screen))) return false;
     if (movie && !norm(show.movieTitle).includes(movie)) return false;
+    if (alert.seatFilter === 'available' && show.status !== 'available') return false;
     return true;
   }
 
@@ -50,7 +52,8 @@
 
   function alertKey(alert) {
     const datePart = alert.dateMode === 'any' ? '*' : alert.date;
-    return [alert.theatreCode, alert.dateMode, datePart, norm(alert.screenFilter), norm(alert.movieFilter)].join('|');
+    return [alert.theatreCode, alert.dateMode, datePart, norm(alert.screenFilter), norm(alert.movieFilter),
+            alert.seatFilter || 'any'].join('|');
   }
 
   function buildBMSUrl(alert, date) {

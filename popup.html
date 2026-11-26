@@ -130,6 +130,13 @@
           <label class="radio"><input type="radio" name="manualNotifyMode" value="limit" /> Stop after <input type="number" id="manualLimit" class="limit-input" min="1" value="3" /> notifications</label>
         </div>
       </div>
+      <div class="field">
+        <label>Notify for</label>
+        <div class="radio-row">
+          <label class="radio"><input type="radio" name="manualSeatFilter" value="any" checked /> All bookable shows</label>
+          <label class="radio"><input type="radio" name="manualSeatFilter" value="available" /> Only available 🟢</label>
+        </div>
+      </div>
       <button class="btn-primary btn-full" id="btnAddManual">+ Add Alert</button>
     </div>
   </div>
@@ -220,6 +227,13 @@
             <label class="radio"><input type="radio" name="modalNotifyMode" value="every" /> Every new date</label>
             <label class="radio"><input type="radio" name="modalNotifyMode" value="once" checked /> Once</label>
             <label class="radio"><input type="radio" name="modalNotifyMode" value="limit" /> Stop after <input type="number" id="modalLimit" class="limit-input" min="1" value="3" /> notifications</label>
+          </div>
+        </div>
+        <div class="field">
+          <label>Notify for</label>
+          <div class="radio-row">
+            <label class="radio"><input type="radio" name="modalSeatFilter" value="any" checked /> All bookable shows</label>
+            <label class="radio"><input type="radio" name="modalSeatFilter" value="available" /> Only available 🟢</label>
           </div>
         </div>
       </div>

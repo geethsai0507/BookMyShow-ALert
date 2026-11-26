@@ -252,3 +252,34 @@ test('describeShowTime tags availability with colour and words', () => {
   assert.equal(C.describeShowTime({ time: '', status: 'available' }), '🟢 available');
   assert.equal(C.describeShowTime({ time: '09:00 PM' }), '09:00 PM');
 });
+
+// ── Seat filter: all bookable shows vs only available (green) ──
+
+test('normalizeAlert defaults seatFilter to any', () => {
+  assert.equal(C.normalizeAlert({ id: 'a', status: 'watching' }).seatFilter, 'any');
+  assert.equal(C.normalizeAlert({ id: 'a', status: 'watching', seatFilter: 'available' }).seatFilter, 'available');
+});
+
+test('seatFilter available skips filling-fast shows', () => {
+  const a = { screenFilter: 'pcx', movieFilter: '', seatFilter: 'available' };
+  assert.equal(C.showMatches({ screen: 'SCREEN 6', format: 'PCX Screen', status: 'fast_filling' }, a), false);
+  assert.equal(C.showMatches({ screen: 'SCREEN 6', format: 'PCX Screen', status: 'available' }, a), true);
+});
+
+test('seatFilter any keeps filling-fast shows', () => {
+  const a = { screenFilter: 'pcx', movieFilter: '', seatFilter: 'any' };
+  assert.equal(C.showMatches({ screen: 'SCREEN 6', format: 'PCX Screen', status: 'fast_filling' }, a), true);
+});
+
+test('available-only alert: date with only orange shows is not found, then notifies when green appears', () => {
+  const a = W({ dateMode: 'any', screenFilter: 'pcx', seatFilter: 'available' });
+  const orange = { movieTitle: 'Avengers: Doomsday', screen: 'SCREEN 6', format: 'Infinity Vision 3D/PCX Screen', status: 'fast_filling' };
+  const green  = { ...orange, time: '09:00 PM', status: 'available' };
+  assert.deepEqual(C.collectNewDates(a, { '20261218': [orange] }, '20261126'), []);
+  assert.deepEqual(C.collectNewDates(a, { '20261218': [orange, green] }, '20261126'), [{ date: '20261218', shows: [green] }]);
+});
+
+test('alertKey distinguishes seatFilter', () => {
+  const base = { theatreCode: 'PRHN', dateMode: 'any', date: null, screenFilter: 'PCX', movieFilter: '' };
+  assert.notEqual(C.alertKey({ ...base, seatFilter: 'any' }), C.alertKey({ ...base, seatFilter: 'available' }));
+});
