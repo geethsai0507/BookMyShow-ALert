@@ -128,6 +128,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // PASSIVE: user is browsing a theatre page — match that page's date
 // ═════════════════════════════════════════════════════════════
 async function handlePageData(data) {
+  if (!AlertCore.isDateCode(data.currentDate)) return;
   const today  = todayYYYYMMDD();
   const alerts = (await getAlerts()).filter(a => a.theatreCode === data.venueCode && a.status === 'watching');
   for (const alert of alerts) {
@@ -142,18 +143,23 @@ async function handlePageData(data) {
 // found: Array<{ date: 'YYYYMMDD', shows: show[] }>  (matching shows only)
 // ═════════════════════════════════════════════════════════════
 async function notifyAlert(alertId, found) {
-  const alerts = await getAlerts();
-  const alert  = alerts.find(a => a.id === alertId);
-  if (!alert || alert.status !== 'watching') return;   // stopped/paused/deleted meanwhile
+  // Decide + persist inside the alert queue so concurrent callers can't both
+  // notify the same date or overwrite a pause/stop with a stale copy.
+  const result = await alertQueue(async () => {
+    const alert = (await getAlerts()).find(a => a.id === alertId);
+    if (!alert || alert.status !== 'watching') return null;   // stopped/paused/deleted meanwhile
 
-  const fresh = found.filter(f => !alert.notifiedDates.includes(f.date))
-                     .sort((a, b) => a.date.localeCompare(b.date));
-  if (!fresh.length) return;
+    const fresh = found.filter(f => !alert.notifiedDates.includes(f.date))
+                       .sort((a, b) => a.date.localeCompare(b.date));
+    if (!fresh.length) return null;
 
-  // Persist FIRST (idempotency) — a second caller now sees these dates as notified
-  const updated = AlertCore.applyNotification(alert, fresh.map(f => f.date));
-  updated.movies = [...new Set([...(alert.movies || []), ...fresh.flatMap(f => f.shows.map(s => s.movieTitle))])];
-  await updateAlert(alertId, updated);
+    const delta  = AlertCore.notificationDelta(alert, fresh.map(f => f.date));
+    delta.movies = [...new Set([...(alert.movies || []), ...fresh.flatMap(f => f.shows.map(s => s.movieTitle))])];
+    await writeAlertFields(alertId, delta);   // persist FIRST (idempotency)
+    return { alert, fresh, updated: { ...alert, ...delta } };
+  });
+  if (!result) return;
+  const { alert, fresh, updated } = result;
 
   console.log(`[ShowAlert] 🔔 Notifying ${alert.theatreName} for ${fresh.map(f => f.date).join(', ')}`);
   await sendDesktopNotification(updated, fresh);
@@ -164,8 +170,9 @@ async function notifyAlert(alertId, found) {
 // CHECK CYCLE — one minimized window, one tab, walk open dates
 // ═════════════════════════════════════════════════════════════
 let cycleRunning      = false;
-let checkWindowClosed = false;
-const waiters = new Map();   // tabId → { expectedDate, resolve, timer }
+let checkWindowClosed = false;   // user closed the check window during this cycle
+let checkWindowId     = null;    // mirrors storage.session so onRemoved can react synchronously
+const waiters = new Map();   // tabId → { expectedVenue, expectedDate, resolve, timer }
 
 async function runPollCycle(onlyTheatreCode = null) {
   if (cycleRunning || !(await acquireLock())) {
@@ -174,6 +181,8 @@ async function runPollCycle(onlyTheatreCode = null) {
   }
   cycleRunning = true;
   try {
+    await closeCheckWindow();       // stale window from a worker that died mid-cycle
+    checkWindowClosed = false;
     const watching = (await getAlerts()).filter(a => a.status === 'watching');
     const codes = [...new Set(watching.map(a => a.theatreCode))]
       .filter(c => !onlyTheatreCode || c === onlyTheatreCode);
@@ -181,6 +190,7 @@ async function runPollCycle(onlyTheatreCode = null) {
 
     console.log(`[ShowAlert] Check cycle: ${codes.length} theatre(s)`);
     for (let i = 0; i < codes.length; i++) {
+      if (checkWindowClosed) { console.log('[ShowAlert] Check window closed — cycle aborted'); break; }
       await refreshLock();
       const result = await checkTheatre(codes[i]);
       if (result === 'aborted') { console.log('[ShowAlert] Check window closed — cycle aborted'); break; }
@@ -208,8 +218,8 @@ async function checkTheatre(theatreCode) {
   const { tabId } = await getCheckWindow();
 
   // First load: accept whichever date BMS serves (today, or a redirect target)
-  const first = await navigateAndWait(tabId, AlertCore.buildBMSUrl(ref, today), null);
-  if (checkWindowClosed) return 'aborted';
+  const first = await navigateAndWait(tabId, AlertCore.buildBMSUrl(ref, today), theatreCode, null);
+  if (!first && !(await checkWindowAlive())) return 'aborted';
   if (!first) { console.log(`[ShowAlert] ${theatreCode}: no page data (timeout)`); return; }
 
   const showsByDate = { [first.currentDate]: first.shows || [] };
@@ -220,8 +230,8 @@ async function checkTheatre(theatreCode) {
   console.log(`[ShowAlert] ${theatreCode}: open dates ${JSON.stringify(first.availableDates)} → visiting ${JSON.stringify(toVisit)}`);
 
   for (const date of toVisit) {
-    const data = await navigateAndWait(tabId, AlertCore.buildBMSUrl(ref, date), date);
-    if (checkWindowClosed) return 'aborted';
+    const data = await navigateAndWait(tabId, AlertCore.buildBMSUrl(ref, date), theatreCode, date);
+    if (!data && !(await checkWindowAlive())) return 'aborted';
     if (data) showsByDate[date] = data.shows || [];
     else console.log(`[ShowAlert] ${theatreCode}: ${date} not served (redirect or timeout)`);
   }
@@ -234,12 +244,13 @@ async function checkTheatre(theatreCode) {
   }
 }
 
-// Navigate the check tab and wait for its PAGE_SHOW_DATA.
+// Navigate the check tab and wait for its PAGE_SHOW_DATA for this theatre.
 // expectedDate null = accept any date; otherwise a different date (redirect) → null.
-function navigateAndWait(tabId, url, expectedDate, timeoutMs = PER_DATE_TIMEOUT_MS) {
+// Data from another theatre (a late post from the previous page) is ignored.
+function navigateAndWait(tabId, url, expectedVenue, expectedDate, timeoutMs = PER_DATE_TIMEOUT_MS) {
   return new Promise(resolve => {
     const timer = setTimeout(() => { waiters.delete(tabId); resolve(null); }, timeoutMs);
-    waiters.set(tabId, { expectedDate, resolve, timer });
+    waiters.set(tabId, { expectedVenue, expectedDate, resolve, timer });
     chrome.tabs.update(tabId, { url }).catch(() => {
       clearTimeout(timer); waiters.delete(tabId); resolve(null);
     });
@@ -249,9 +260,11 @@ function navigateAndWait(tabId, url, expectedDate, timeoutMs = PER_DATE_TIMEOUT_
 function resolveWaiter(tabId, data) {
   const w = waiters.get(tabId);
   if (!w) return;
+  const verdict = AlertCore.waiterVerdict(w, data);
+  if (verdict === 'ignore') return;            // stale page of another theatre — keep waiting
   clearTimeout(w.timer);
   waiters.delete(tabId);
-  w.resolve(w.expectedDate === null || data.currentDate === w.expectedDate ? data : null);
+  w.resolve(verdict === 'accept' ? data : null);
 }
 
 function resolveAllWaiters() {
@@ -270,17 +283,24 @@ async function getCheckWindow() {
     try {
       await chrome.windows.get(checkWindow.windowId);
       await chrome.tabs.get(checkWindow.tabId);
+      checkWindowId = checkWindow.windowId;
       return checkWindow;
     } catch (_) { /* gone — create a new one */ }
   }
   const win = await chrome.windows.create({ url: 'about:blank', state: 'minimized', focused: false });
   const cw  = { windowId: win.id, tabId: win.tabs[0].id };
-  checkWindowClosed = false;
+  checkWindowId = cw.windowId;
   await chrome.storage.session.set({ checkWindow: cw });
   return cw;
 }
 
+async function checkWindowAlive() {
+  if (checkWindowClosed || checkWindowId == null) return false;
+  try { await chrome.windows.get(checkWindowId); return true; } catch (_) { return false; }
+}
+
 async function closeCheckWindow() {
+  checkWindowId = null;             // our own close must not count as "user closed it"
   const { checkWindow } = await chrome.storage.session.get('checkWindow');
   if (!checkWindow) return;
   await chrome.storage.session.remove('checkWindow');
@@ -294,11 +314,11 @@ async function isCheckTab(tabId) {
 }
 
 chrome.windows.onRemoved.addListener(async windowId => {
-  const { checkWindow } = await chrome.storage.session.get('checkWindow');
-  if (checkWindow?.windowId !== windowId) return;
-  checkWindowClosed = true;
-  await chrome.storage.session.remove('checkWindow');
+  if (windowId !== checkWindowId) return;   // not ours, or we closed it ourselves
+  checkWindowClosed = true;                 // set synchronously, before any await
+  checkWindowId = null;
   resolveAllWaiters();
+  await chrome.storage.session.remove('checkWindow');
 });
 
 // ── Cycle lock (survives worker restarts via storage.session) ─
@@ -511,7 +531,15 @@ async function getAlerts() {
   return normalized;
 }
 
-async function updateAlert(id, fields) {
+// All alert writes in the worker go through this queue (read-modify-write is atomic here).
+const alertQueue = AlertCore.createSerialQueue();
+
+function updateAlert(id, fields) {
+  return alertQueue(() => writeAlertFields(id, fields));
+}
+
+// Only call from inside alertQueue.
+async function writeAlertFields(id, fields) {
   const alerts = await getAlerts();
   const idx    = alerts.findIndex(a => a.id === id);
   if (idx === -1) return;

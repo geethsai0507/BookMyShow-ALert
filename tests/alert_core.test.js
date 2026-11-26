@@ -159,3 +159,63 @@ test('applyNotification limit counts notifications not dates', () => {
 test('applyNotification once mode → done', () => {
   assert.equal(C.applyNotification(W({ notifyMode: 'once' }), ['20261224']).status, 'done');
 });
+
+// ── Final review fixes ───────────────────────────────────────
+
+test('selectShowtimesQuery returns null when no query matches the page date (C1)', () => {
+  const queries = { 'getShowtimesByVenue-PRHN-20261218': { status: 'fulfilled', data: { x: 1 }, originalArgs: { dateCode: '20261218' } } };
+  assert.equal(C.selectShowtimesQuery(queries, '20261224'), null);
+});
+
+test('selectShowtimesQuery matches by key or by originalArgs.dateCode, fulfilled only', () => {
+  const byKey = { 'q-20261224': { status: 'fulfilled', data: { a: 1 }, originalArgs: {} } };
+  assert.equal(C.selectShowtimesQuery(byKey, '20261224').key, 'q-20261224');
+  const byArgs = {
+    pending: { status: 'pending', data: null, originalArgs: { dateCode: '20261224' } },
+    other:   { status: 'fulfilled', data: { b: 1 }, originalArgs: { dateCode: '20261224' } }
+  };
+  const hit = C.selectShowtimesQuery(byArgs, '20261224');
+  assert.equal(hit.key, 'other');
+  assert.deepEqual(hit.data, { b: 1 });
+  assert.deepEqual(hit.args, { dateCode: '20261224' });
+  assert.equal(C.selectShowtimesQuery(undefined, '20261224'), null);
+});
+
+test('waiterVerdict ignores another theatre, rejects other date, accepts match (I1)', () => {
+  assert.equal(C.waiterVerdict({ expectedVenue: 'PRHN', expectedDate: null }, { venueCode: 'ARTV', currentDate: '20261223' }), 'ignore');
+  assert.equal(C.waiterVerdict({ expectedVenue: 'PRHN', expectedDate: '20261224' }, { venueCode: 'PRHN', currentDate: '20261223' }), 'reject');
+  assert.equal(C.waiterVerdict({ expectedVenue: 'PRHN', expectedDate: null }, { venueCode: 'PRHN', currentDate: '20261223' }), 'accept');
+  assert.equal(C.waiterVerdict({ expectedVenue: 'PRHN', expectedDate: '20261224' }, { venueCode: 'PRHN', currentDate: '20261224' }), 'accept');
+});
+
+test('createSerialQueue runs tasks one at a time in order (I2)', async () => {
+  const q = C.createSerialQueue();
+  const log = [];
+  const task = (name, ms) => () => new Promise(r => { log.push(name + ':start'); setTimeout(() => { log.push(name + ':end'); r(name); }, ms); });
+  const results = await Promise.all([q(task('a', 20)), q(task('b', 1))]);
+  assert.deepEqual(results, ['a', 'b']);
+  assert.deepEqual(log, ['a:start', 'a:end', 'b:start', 'b:end']);
+});
+
+test('createSerialQueue keeps going after a task throws', async () => {
+  const q = C.createSerialQueue();
+  await assert.rejects(q(async () => { throw new Error('boom'); }));
+  assert.equal(await q(async () => 'next'), 'next');
+});
+
+test('notificationDelta contains only notification fields (I2)', () => {
+  const a = W({ id: 'x', notifyMode: 'every', theatreName: 'P', lastChecked: 5 });
+  assert.deepEqual(C.notificationDelta(a, ['20261224']), { notifiedDates: ['20261224'], notificationCount: 1, status: 'watching' });
+});
+
+test('isDateCode accepts only 8 digits; collectNewDates ignores malformed dates', () => {
+  assert.equal(C.isDateCode('20261224'), true);
+  assert.equal(C.isDateCode('<img onerror=x>'), false);
+  assert.equal(C.isDateCode('2026122'), false);
+  const a = W({ dateMode: 'any' });
+  assert.deepEqual(C.collectNewDates(a, { '<b>9</b>': [regularShow], '20261224': [regularShow] }, '20261223').map(x => x.date), ['20261224']);
+});
+
+test('showMatches also checks the dimension field (M4)', () => {
+  assert.equal(C.showMatches({ screen: 'Screen 3', format: '', dimension: 'PCX', movieTitle: 'X' }, { screenFilter: 'pcx', movieFilter: '' }), true);
+});

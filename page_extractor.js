@@ -33,28 +33,18 @@
       // BMS stores it under venueShowtimesFunctionalApi.queries
       // The key is like "getShowtimesByVenue-ACEV-20260318"
       const queries = state?.venueShowtimesFunctionalApi?.queries ?? {};
-      let qdata = null, qargs = {};
-      const fulfilled = Object.entries(queries).filter(([, q]) => q?.status === 'fulfilled' && q?.data);
-      // Prefer the query for this page's date — the store may also hold other dates.
-      let hit = fulfilled.find(([key, q]) =>
-        key.includes(currentDate) || String(q.originalArgs?.dateCode ?? '') === currentDate);
-      if (!hit && fulfilled.length) {
-        hit = fulfilled[0];
-        console.warn('[ShowAlert/page] No query matched date', currentDate, '— falling back to', hit[0]);
-      }
-      if (hit) {
-        qdata = hit[1].data;
-        qargs = hit[1].originalArgs ?? {};
-        console.log('[ShowAlert/page] Found query key:', hit[0]);
-      }
-      const apiToken   = qargs.token      ?? '';
-      const bmsId      = qargs.bmsId      ?? '';
-      const regionCode = qargs.regionCode ?? 'HYD';
-
-      if (!qdata) {
-        console.warn('[ShowAlert/page] No fulfilled query data found in venueShowtimesFunctionalApi');
+      // Only this page's date — another date's data must never be reported
+      // as this date (would cause false alerts and hide the real opening).
+      const hit = window.AlertCore.selectShowtimesQuery(queries, currentDate);
+      if (!hit) {
+        console.warn('[ShowAlert/page] No showtimes query for date', currentDate, '— not reporting');
         return false;
       }
+      console.log('[ShowAlert/page] Found query key:', hit.key);
+      const qdata      = hit.data;
+      const apiToken   = hit.args.token      ?? '';
+      const bmsId      = hit.args.bmsId      ?? '';
+      const regionCode = hit.args.regionCode ?? 'HYD';
 
       // ── Parse shows from Event array ──────────────────────────
       const shows = [];
@@ -73,7 +63,8 @@
             shows.push({
               movieTitle,
               time:     slot.ShowTime    ?? '',
-              format:   slot.Attributes  ?? dimension,
+              format:   slot.Attributes || dimension,
+              dimension,
               language,
               screen:   slot.ScreenName  ?? '',
               minPrice: slot.MinPrice    ?? '',
@@ -107,7 +98,7 @@
         city:           toTitleCase(citySlug.replace(/-/g, ' ')),
         currentDate,
         shows,
-        screens:        uniq(shows.flatMap(s => [s.screen, s.format])),
+        screens:        uniq(shows.flatMap(s => [s.screen, s.format, s.dimension])),
         movies:         uniq(shows.map(s => s.movieTitle)),
         availableDates,
         allDates,

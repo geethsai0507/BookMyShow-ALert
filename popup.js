@@ -335,7 +335,7 @@ async function renderAlerts() {
 
     const found = [...(a.notifiedDates || [])].sort();
     const foundStr = found.length
-      ? `<span class="alert-found">Found: ${found.slice(0, 4).map(formatShortDate).join(', ')}${found.length > 4 ? ` +${found.length - 4}` : ''}</span> · `
+      ? `<span class="alert-found">Found: ${found.slice(0, 4).map(d => esc(formatShortDate(d))).join(', ')}${found.length > 4 ? ` +${found.length - 4}` : ''}</span> · `
       : '';
 
     const canPause = a.status === 'watching' || a.status === 'paused';
@@ -571,7 +571,7 @@ function toInputDate(yyyymmdd) {
 function fromInputDate(iso) { return iso.replace(/-/g, ''); }
 
 function formatShortDate(yyyymmdd) {
-  if (!yyyymmdd || yyyymmdd.length !== 8) return yyyymmdd || '';
+  if (!AlertCore.isDateCode(yyyymmdd)) return '';
   const d = new Date(`${yyyymmdd.slice(0,4)}-${yyyymmdd.slice(4,6)}-${yyyymmdd.slice(6,8)}`);
   return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
 }

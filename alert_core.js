@@ -39,7 +39,7 @@
   function showMatches(show, alert) {
     const screen = norm(alert.screenFilter);
     const movie  = norm(alert.movieFilter);
-    if (screen && !norm(show.screen).includes(screen) && !norm(show.format).includes(screen)) return false;
+    if (screen && ![show.screen, show.format, show.dimension].some(f => norm(f).includes(screen))) return false;
     if (movie && !norm(show.movieTitle).includes(movie)) return false;
     return true;
   }
@@ -92,7 +92,7 @@
     if (!isWatching(alert)) return [];
     const found = [];
     for (const date of Object.keys(showsByDate).sort()) {
-      if (date < today || notified(alert).includes(date)) continue;
+      if (!isDateCode(date) || date < today || notified(alert).includes(date)) continue;
       if (alert.dateMode === 'single' && date !== alert.date) continue;
       const shows = matchingShows(showsByDate[date], alert);
       if (shows.length) found.push({ date, shows });
@@ -112,10 +112,49 @@
     return a;
   }
 
+  // Only the notification fields — write these, never a whole stale alert.
+  function notificationDelta(alert, dates) {
+    const a = applyNotification(alert, dates);
+    return { notifiedDates: a.notifiedDates, notificationCount: a.notificationCount, status: a.status };
+  }
+
+  function isDateCode(s) { return typeof s === 'string' && /^\d{8}$/.test(s); }
+
+  // The showtimes query for exactly this date — never another date's data.
+  function selectShowtimesQuery(queries, currentDate) {
+    for (const [key, q] of Object.entries(queries || {})) {
+      if (q?.status !== 'fulfilled' || !q.data) continue;
+      if (key.includes(currentDate) || String(q.originalArgs?.dateCode ?? '') === currentDate) {
+        return { key, data: q.data, args: q.originalArgs ?? {} };
+      }
+    }
+    return null;
+  }
+
+  // How a check-tab waiter treats incoming page data:
+  // 'ignore' = another theatre (stale page, keep waiting),
+  // 'reject' = right theatre, wrong date (redirect), 'accept' otherwise.
+  function waiterVerdict(waiter, data) {
+    if (waiter.expectedVenue && data.venueCode !== waiter.expectedVenue) return 'ignore';
+    if (waiter.expectedDate !== null && data.currentDate !== waiter.expectedDate) return 'reject';
+    return 'accept';
+  }
+
+  // Runs async tasks strictly one after another; a failure doesn't block later tasks.
+  function createSerialQueue() {
+    let tail = Promise.resolve();
+    return function enqueue(task) {
+      const run = tail.then(() => task());
+      tail = run.catch(() => {});
+      return run;
+    };
+  }
+
   const AlertCore = {
     normalizeAlert, showMatches, matchingShows, alertKey,
     buildBMSUrl, notificationId, parseNotificationId,
-    datesToVisit, collectNewDates, applyNotification
+    datesToVisit, collectNewDates, applyNotification,
+    notificationDelta, isDateCode, selectShowtimesQuery, waiterVerdict, createSerialQueue
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = AlertCore;
