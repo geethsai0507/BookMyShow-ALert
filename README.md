@@ -29,14 +29,21 @@ For contributors, start here:
 2. Click the floating Notify Me button on the page
 3. Open the extension popup
 4. Click + Notify Me in the detected theatre banner
-5. Select date
-6. Click Activate Alert
+5. Optional: type a **Screen / format** (e.g. `PCX`, `EPIC`, `IMAX`) — suggestions come from the screens on the page you're on
+6. Optional: type a **Movie** (e.g. `Doomsday`)
+7. Choose **Any date** or a **Specific date**
+8. Choose how to be notified: **Every new date**, **Once**, or **Stop after N notifications**
+9. Click Activate Alert
+
+Example: "Doomsday · PCX · Any date · Every new date" at Prasads tells you each time PCX opens a new date for Doomsday, and never fires for the other screens.
+Screen and movie matching ignores case and matches part of the name (`pcx` matches `PCX` and `Screen 1 - PCX`).
 
 ## 4) Add alert manually
 1. Open extension popup
 2. Expand Add Alert Manually
-3. Enter Theatre Code, Theatre Name, City, and Date
-4. Click + Add Alert
+3. Enter Theatre Code, Theatre Name and City
+4. Optionally set Screen / format and Movie, then pick the date and notify options (same as above)
+5. Click + Add Alert
 
 ## 5) Optional email provider setup
 1. Open extension popup
@@ -46,11 +53,20 @@ For contributors, start here:
 5. Click Save Settings
 
 ## 6) Manage alerts
-1. Active Alerts list shows all current alerts
-2. Click X beside an alert to remove it
-3. Click Clear all to remove all alerts
+1. Active Alerts list shows each alert's screen, movie, date mode, and the dates found so far
+2. Click ⏸ to pause an alert and ▶ to resume it
+3. Click X beside an alert to remove it
+4. Click Clear all to remove all alerts
 
 ## 7) Notification behavior
-1. Desktop notification is sent when tickets open
+1. Desktop notification is sent when matching shows open
 2. Email is also sent if provider is configured
-3. Each alert notifies once per theatre and date
+3. A date is never notified twice for the same alert
+4. If several dates open at once, they arrive in **one** notification (counted as one toward "Stop after N")
+5. Click **Book Now** to open the date, or **Stop this alert** to stop watching
+6. Every few minutes the extension checks each theatre in a separate **minimized window** (it opens and closes on its own; your tabs aren't touched)
+
+## 8) Development
+Run the unit tests (Node 18+, no install needed):
+
+    node --test
