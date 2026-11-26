@@ -33,22 +33,23 @@
       // BMS stores it under venueShowtimesFunctionalApi.queries
       // The key is like "getShowtimesByVenue-ACEV-20260318"
       const queries = state?.venueShowtimesFunctionalApi?.queries ?? {};
-      let qdata = null;
-      let apiToken = '', bmsId = '', regionCode = 'HYD';
-
-      for (const key of Object.keys(queries)) {
-        const q = queries[key];
-        // Find a fulfilled query with data
-        if (q?.status === 'fulfilled' && q?.data) {
-          qdata = q.data;
-          const args = q.originalArgs ?? {};
-          apiToken   = args.token      ?? '';
-          bmsId      = args.bmsId      ?? '';
-          regionCode = args.regionCode ?? 'HYD';
-          console.log('[ShowAlert/page] Found query key:', key);
-          break;
-        }
+      let qdata = null, qargs = {};
+      const fulfilled = Object.entries(queries).filter(([, q]) => q?.status === 'fulfilled' && q?.data);
+      // Prefer the query for this page's date — the store may also hold other dates.
+      let hit = fulfilled.find(([key, q]) =>
+        key.includes(currentDate) || String(q.originalArgs?.dateCode ?? '') === currentDate);
+      if (!hit && fulfilled.length) {
+        hit = fulfilled[0];
+        console.warn('[ShowAlert/page] No query matched date', currentDate, '— falling back to', hit[0]);
       }
+      if (hit) {
+        qdata = hit[1].data;
+        qargs = hit[1].originalArgs ?? {};
+        console.log('[ShowAlert/page] Found query key:', hit[0]);
+      }
+      const apiToken   = qargs.token      ?? '';
+      const bmsId      = qargs.bmsId      ?? '';
+      const regionCode = qargs.regionCode ?? 'HYD';
 
       if (!qdata) {
         console.warn('[ShowAlert/page] No fulfilled query data found in venueShowtimesFunctionalApi');
@@ -102,9 +103,12 @@
         venueCode,
         theatreName:    toTitleCase(theatreSlug.replace(/-/g, ' ')),
         theatreSlug,
+        citySlug,
         city:           toTitleCase(citySlug.replace(/-/g, ' ')),
         currentDate,
         shows,
+        screens:        uniq(shows.flatMap(s => [s.screen, s.format])),
+        movies:         uniq(shows.map(s => s.movieTitle)),
         availableDates,
         allDates,
         tokens: { bmsApiToken: apiToken, bmsId, regionCode }
@@ -118,6 +122,10 @@
       console.error('[ShowAlert/page] Parse error:', e.message);
       return false;
     }
+  }
+
+  function uniq(arr) {
+    return [...new Set(arr.map(v => String(v ?? '').trim()).filter(Boolean))];
   }
 
   function toTitleCase(s) {
