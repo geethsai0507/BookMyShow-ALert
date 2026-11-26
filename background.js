@@ -2,34 +2,48 @@
 // background.js  –  ShowAlert Service Worker
 //
 // ARCHITECTURE:
-//  PRIMARY:  Content script reads window.__INITIAL_STATE__ on
-//            every BMS page visit → sends PAGE_SHOW_DATA here
-//            → we match against stored alerts → fire notification
-//            No network calls, no Cloudflare issues.
+//  Show data only comes from BMS pages: page_extractor.js reads
+//  window.__INITIAL_STATE__ and content.js relays it here as
+//  PAGE_SHOW_DATA (one page = one date's shows + list of open dates).
 //
-//  SECONDARY: Alarm-based polling every 3min tries BMS API.
-//             Often blocked by Cloudflare from service worker
-//             context (no cookies). Kept as best-effort fallback.
+//  CHECK CYCLE (alarm, every N min): for each theatre with watching
+//  alerts, one tab inside a dedicated MINIMIZED window loads today's
+//  page, then navigates to each open future date an alert still needs
+//  and waits for that tab's PAGE_SHOW_DATA. Matching (screen / movie /
+//  date) and notification state live in alert_core.js.
+//
+//  PASSIVE: when the user browses a theatre page themselves, that
+//  page's date is matched too.
 //
 // REDIRECT HANDLING:
-//  When user visits future date URL, BMS redirects to today.
-//  Content script sends ShowDatesArray (all upcoming dates with
-//  enabled/disabled status). We check if any alert's target
-//  date just became enabled → fire notification immediately.
+//  An open date's URL loads that date. A date that isn't open yet
+//  redirects to today — so data is accepted only when its currentDate
+//  equals the date we asked for.
 // ─────────────────────────────────────────────────────────────
 
-const ALARM_NAME   = 'showalert-poll';
-const ALARM_PERIOD = 3; // minutes
+importScripts('alert_core.js');
+
+const ALARM_NAME          = 'showalert-poll';
+const ALARM_PERIOD        = 3;              // minutes
+const LOCK_STALE_MS       = 3 * 60 * 1000;  // lock older than this is from a dead worker
+const PER_DATE_TIMEOUT_MS = 15000;
+const THEATRE_STAGGER_MS  = 4000;
 
 // ═════════════════════════════════════════════════════════════
 // INSTALL / STARTUP
 // ═════════════════════════════════════════════════════════════
 chrome.runtime.onInstalled.addListener(async () => {
   console.log('[ShowAlert] Installed.');
+  await getAlerts();          // migrates legacy alerts
+  await closeCheckWindow();
   await maybeStartAlarm();
 });
 
-chrome.runtime.onStartup.addListener(maybeStartAlarm);
+chrome.runtime.onStartup.addListener(async () => {
+  await getAlerts();          // migrates legacy alerts
+  await closeCheckWindow();
+  await maybeStartAlarm();
+});
 
 async function maybeStartAlarm() {
   const s = await getSettings();
@@ -40,10 +54,6 @@ async function maybeStartAlarm() {
   console.log(`[ShowAlert] Alarm set every ${period} min`);
 }
 
-// ═════════════════════════════════════════════════════════════
-// ALARM: best-effort background polling
-// (may be blocked by Cloudflare — content script is primary)
-// ═════════════════════════════════════════════════════════════
 chrome.alarms.onAlarm.addListener(async alarm => {
   if (alarm.name !== ALARM_NAME) return;
   await runPollCycle();
@@ -52,11 +62,10 @@ chrome.alarms.onAlarm.addListener(async alarm => {
 // ═════════════════════════════════════════════════════════════
 // MESSAGE HANDLER
 // ═════════════════════════════════════════════════════════════
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     switch (msg.action) {
 
-      // ── Setup / settings ─────────────────────────────────
       case 'START_MONITORING':
         await maybeStartAlarm();
         sendResponse({ ok: true });
@@ -70,40 +79,33 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         break;
       }
 
-      // ── Save BMS tokens extracted from page ──────────────
       case 'SAVE_BMS_TOKENS':
-        if (msg.tokens?.bmsApiToken) {
-          await chrome.storage.local.set({ bmsTokens: msg.tokens });
-          console.log('[ShowAlert] BMS tokens saved from page');
-        }
+        if (msg.tokens?.bmsApiToken) await chrome.storage.local.set({ bmsTokens: msg.tokens });
         sendResponse({ ok: true });
         break;
 
-      // ── PRIMARY: Page data from content script ───────────
-      // content.js sends this every time a BMS venue page loads.
-      // msg contains: venueCode, theatreName, city, theatreSlug,
-      //   currentDate, shows[], availableDates[], allUpcomingDates[]
+      // Page data: from our check tab → the waiting cycle; otherwise passive match
       case 'PAGE_SHOW_DATA': {
-        console.log(`[ShowAlert] PAGE_SHOW_DATA received:`, {
-          venue:     msg.venueCode,
-          date:      msg.currentDate,
-          shows:     msg.shows?.length,
-          available: msg.availableDates
-        });
-        await handlePageData(msg);
+        const tabId = sender.tab?.id;
+        console.log('[ShowAlert] PAGE_SHOW_DATA', { tab: tabId, venue: msg.venueCode, date: msg.currentDate, shows: msg.shows?.length });
+        if (tabId != null && waiters.has(tabId)) {
+          resolveWaiter(tabId, msg);
+        } else if (!(await isCheckTab(tabId))) {
+          await handlePageData(msg);
+        }
         sendResponse({ ok: true });
         break;
       }
 
-      // ── Alert added: open a silent tab to check immediately ──
+      // New or resumed alert: check its theatre now (skipped if a cycle is running)
       case 'ALERT_ADDED':
-        await updateAlertField(msg.alert.id, { lastChecked: Date.now() });
-        // Open a background tab — content scripts will extract live data
-        openSilentTab(buildBMSUrl(msg.alert), msg.alert.theatreCode);
+      case 'ALERT_UPDATED':
+        if (msg.alert?.status !== 'paused' && msg.alert?.status !== 'done') {
+          runPollCycle(msg.alert.theatreCode);
+        }
         sendResponse({ ok: true });
         break;
 
-      // ── Force poll ───────────────────────────────────────
       case 'FORCE_POLL':
         await runPollCycle();
         sendResponse({ ok: true });
@@ -123,237 +125,211 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 // ═════════════════════════════════════════════════════════════
-// PAGE DATA HANDLER (PRIMARY — from content script)
+// PASSIVE: user is browsing a theatre page — match that page's date
 // ═════════════════════════════════════════════════════════════
 async function handlePageData(data) {
-  const { venueCode, theatreName, city, theatreSlug,
-          currentDate, shows, availableDates, allUpcomingDates } = data;
-
-  const alerts = await getAlerts();
-  // Only check active, un-notified alerts for this theatre
-  const matching = alerts.filter(a =>
-    a.theatreCode === venueCode &&
-    a.status      === 'watching' &&
-    !a.notified
-  );
-
-  if (!matching.length) return;
-
-  console.log(`[ShowAlert] Checking ${matching.length} alert(s) for ${venueCode}`);
-
-  for (const alert of matching) {
-    await updateAlertField(alert.id, { lastChecked: Date.now() });
-
-    // ── Case 1: Alert date = current page date AND shows exist ─
-    if (alert.date === currentDate && shows.length > 0) {
-      console.log(`[ShowAlert] ✅ MATCH! Shows found for ${theatreName} on ${alert.date}`);
-      await fireNotification(alert, shows);
-      continue;
-    }
-
-    // ── Case 2: Alert date now appears as enabled in ShowDatesArray ─
-    // This catches the redirect case: user visited today's page,
-    // but ShowDatesArray now shows their target date is bookable.
-    // IMPORTANT FIX: We now verify actual shows exist for the target date
-    // before sending notification (don't just assume "available" means shows exist)
-    if (availableDates.includes(alert.date)) {
-      console.log(`[ShowAlert] ✅ Target date ${alert.date} just became bookable for ${theatreName}!`);
-      console.log(`[ShowAlert] Opening tab to verify shows exist for target date ${alert.date}`);
-      
-      // Only proceed if no shows were found on current page
-      // If shows exist on current date AND it matches target, we'd be in Case 1
-      // So we safely assume this needs verification
-      await verifyShowsForTargetDate(alert, theatreName);
-      continue;
-    }
-
-    // ── Log why no notification ──────────────────────────────
-    const dateStatus = allUpcomingDates?.find(d => d.dateCode === alert.date);
-    if (dateStatus) {
-      console.log(`[ShowAlert] Date ${alert.date} is still disabled (not bookable yet) for ${venueCode}`);
-    } else {
-      console.log(`[ShowAlert] Date ${alert.date} not found in ShowDatesArray for ${venueCode} — may be too far in future`);
-    }
+  if (!AlertCore.isDateCode(data.currentDate)) return;
+  const today  = todayYYYYMMDD();
+  const alerts = (await getAlerts()).filter(a => a.theatreCode === data.venueCode && a.status === 'watching');
+  for (const alert of alerts) {
+    await updateAlert(alert.id, { lastChecked: Date.now() });
+    const found = AlertCore.collectNewDates(alert, { [data.currentDate]: data.shows || [] }, today);
+    if (found.length) await notifyAlert(alert.id, found);
   }
 }
 
 // ═════════════════════════════════════════════════════════════
-// VERIFY SHOWS FOR TARGET DATE (NEW FIX)
-// When a date becomes available but shows for current page date
-// don't match the alert date, open a tab for the target date
-// and verify actual shows exist before notifying.
+// NOTIFY (batched: one notification per alert covering all new dates)
+// found: Array<{ date: 'YYYYMMDD', shows: show[] }>  (matching shows only)
 // ═════════════════════════════════════════════════════════════
-async function verifyShowsForTargetDate(alert, theatreName) {
-  return new Promise((resolve) => {
-    // Build URL for the target date
-    const city = (alert.city || 'hyderabad').toLowerCase().replace(/\s+/g, '-');
-    const slug = (alert.theatreSlug || alert.theatreName || alert.theatreCode)
-                   .toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    const targetUrl = `https://in.bookmyshow.com/cinemas/${city}/${slug}/buytickets/${alert.theatreCode}/${alert.date}`;
-    
-    chrome.tabs.create({ url: targetUrl, active: false }, (tab) => {
-      if (!tab) { 
-        console.log(`[ShowAlert] Failed to open verification tab for ${alert.theatreCode}`);
-        resolve(); 
-        return; 
-      }
+async function notifyAlert(alertId, found) {
+  // Decide + persist inside the alert queue so concurrent callers can't both
+  // notify the same date or overwrite a pause/stop with a stale copy.
+  const result = await alertQueue(async () => {
+    const alert = (await getAlerts()).find(a => a.id === alertId);
+    if (!alert || alert.status !== 'watching') return null;   // stopped/paused/deleted meanwhile
 
-      const tabId = tab.id;
-      console.log(`[ShowAlert] Opened verification tab ${tabId} for target date ${alert.date}`);
-      
-      silentTabs.set(tabId, { 
-        venueCode: alert.theatreCode, 
-        openedAt: Date.now(),
-        isVerification: true,
-        alert
-      });
+    const fresh = found.filter(f => !alert.notifiedDates.includes(f.date))
+                       .sort((a, b) => a.date.localeCompare(b.date));
+    if (!fresh.length) return null;
 
-      // Close tab after 20 seconds (safety net)
-      const closeTimer = setTimeout(() => {
-        console.log(`[ShowAlert] Verification tab ${tabId} timeout - closing`);
-        silentTabs.delete(tabId);
-        chrome.tabs.remove(tabId, () => {});
-        resolve();
-      }, 20000);
-
-      // Listen for PAGE_SHOW_DATA response with the target date's shows
-      const msgListener = (msg) => {
-        if (msg.action === 'PAGE_SHOW_DATA' && msg.venueCode === alert.theatreCode) {
-          console.log(`[ShowAlert] Verification received for ${alert.theatreCode}, shows: ${msg.shows?.length || 0}`);
-          
-          clearTimeout(closeTimer);
-          chrome.runtime.onMessage.removeListener(msgListener);
-          silentTabs.delete(tabId);
-          
-          // NOW check if actual shows exist
-          if (msg.shows && msg.shows.length > 0) {
-            console.log(`[ShowAlert] ✅ VERIFIED! Real shows found for ${alert.date}. Sending notification.`);
-            fireNotification(alert, msg.shows);
-          } else {
-            console.log(`[ShowAlert] ⚠️ Date ${alert.date} is available but NO SHOWS yet. Keeping alert active.`);
-            // Don't fire - keep the alert watching for actual shows
-          }
-          
-          setTimeout(() => {
-            chrome.tabs.remove(tabId, () => {});
-            resolve();
-          }, 500);
-        }
-      };
-      chrome.runtime.onMessage.addListener(msgListener);
-    });
+    const delta  = AlertCore.notificationDelta(alert, fresh.map(f => f.date));
+    delta.movies = [...new Set([...(alert.movies || []), ...fresh.flatMap(f => f.shows.map(s => s.movieTitle))])];
+    await writeAlertFields(alertId, delta);   // persist FIRST (idempotency)
+    return { alert, fresh, updated: { ...alert, ...delta } };
   });
+  if (!result) return;
+  const { alert, fresh, updated } = result;
+
+  console.log(`[ShowAlert] 🔔 Notifying ${alert.theatreName} for ${fresh.map(f => f.date).join(', ')}`);
+  await sendDesktopNotification(updated, fresh);
+  await sendEmailNotification(updated, fresh);
 }
 
 // ═════════════════════════════════════════════════════════════
-// FIRE NOTIFICATION (dedup-safe)
+// CHECK CYCLE — one minimized window, one tab, walk open dates
 // ═════════════════════════════════════════════════════════════
-async function fireNotification(alert, shows, dateJustOpened = false) {
-  // Idempotency check
-  const notifiedMap = await getNotifiedMap();
-  const idemKey = `${alert.id}_${alert.theatreCode}_${alert.date}`;
-  if (notifiedMap[idemKey]) {
-    console.log(`[ShowAlert] Already notified for ${idemKey}, skipping`);
-    await updateAlertField(alert.id, { status: 'notified', notified: true });
+let cycleRunning      = false;
+let checkWindowClosed = false;   // user closed the check window during this cycle
+let checkWindowId     = null;    // mirrors storage.session so onRemoved can react synchronously
+const waiters = new Map();   // tabId → { expectedVenue, expectedDate, resolve, timer }
+
+async function runPollCycle(onlyTheatreCode = null) {
+  if (cycleRunning || !(await acquireLock())) {
+    console.log('[ShowAlert] Check cycle already running — skipping');
     return;
   }
+  cycleRunning = true;
+  try {
+    await closeCheckWindow();       // stale window from a worker that died mid-cycle
+    checkWindowClosed = false;
+    const watching = (await getAlerts()).filter(a => a.status === 'watching');
+    const codes = [...new Set(watching.map(a => a.theatreCode))]
+      .filter(c => !onlyTheatreCode || c === onlyTheatreCode);
+    if (!codes.length) return;
 
-  // Write idempotency key FIRST (prevent race)
-  notifiedMap[idemKey] = Date.now();
-  await chrome.storage.local.set({ notifiedMap });
-  await updateAlertField(alert.id, {
-    status:      'notified',
-    notified:    true,
-    movies:      [...new Set(shows.map(s => s.movieTitle).filter(t => t !== 'Shows now available'))]
-  });
-
-  await sendDesktopNotification(alert, shows, dateJustOpened);
-  await sendEmailNotification(alert, shows);
-}
-
-// ═════════════════════════════════════════════════════════════
-// BACKGROUND POLL CYCLE
-// Strategy: open a silent background tab for each un-notified alert.
-// The content scripts (page_extractor.js + content.js) run inside
-// that tab, read __INITIAL_STATE__, and send PAGE_SHOW_DATA back.
-// We close the tab after extraction completes (or after timeout).
-// This bypasses Cloudflare completely — the tab has real cookies.
-// ═════════════════════════════════════════════════════════════
-async function runPollCycle() {
-  const alerts = await getAlerts();
-  const active  = alerts.filter(a => a.status === 'watching' && !a.notified);
-  if (!active.length) return;
-
-  console.log(`[ShowAlert] Poll cycle: ${active.length} active alert(s)`);
-
-  // Deduplicate: one tab per unique theatre (covers all date alerts for that venue)
-  const seen = new Set();
-  for (const alert of active) {
-    if (seen.has(alert.theatreCode)) continue;
-    seen.add(alert.theatreCode);
-
-    // Open the theatre's page for TODAY — this always loads with full data.
-    // ShowDatesArray inside tells us which future dates just opened.
-    const todayDate = todayYYYYMMDD();
-    const url = buildBMSUrl(alert);
-
-    console.log(`[ShowAlert] Opening background tab for ${alert.theatreCode}: ${url}`);
-    await openSilentTab(url, alert.theatreCode);
-
-    // Stagger between theatres to be respectful
-    await sleep(4000);
+    console.log(`[ShowAlert] Check cycle: ${codes.length} theatre(s)`);
+    for (let i = 0; i < codes.length; i++) {
+      if (checkWindowClosed) { console.log('[ShowAlert] Check window closed — cycle aborted'); break; }
+      await refreshLock();
+      const result = await checkTheatre(codes[i]);
+      if (result === 'aborted') { console.log('[ShowAlert] Check window closed — cycle aborted'); break; }
+      if (i < codes.length - 1) await sleep(THEATRE_STAGGER_MS);
+    }
+  } catch (e) {
+    console.error('[ShowAlert] Check cycle error:', e);
+  } finally {
+    await closeCheckWindow();
+    await releaseLock();
+    cycleRunning = false;
   }
 }
 
-// Build the BMS buytickets URL for a given alert
-// Always uses today's date — BMS loads the venue + ShowDatesArray for all dates
-function buildBMSUrl(alert) {
-  const city   = (alert.city        || 'hyderabad').toLowerCase().replace(/\s+/g, '-');
-  const slug   = (alert.theatreSlug || alert.theatreName || alert.theatreCode)
-                   .toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  const today  = todayYYYYMMDD();
-  return `https://in.bookmyshow.com/cinemas/${city}/${slug}/buytickets/${alert.theatreCode}/${today}`;
+async function watchingAlertsFor(theatreCode) {
+  return (await getAlerts()).filter(a => a.theatreCode === theatreCode && a.status === 'watching');
 }
 
-// Open a tab in the background, let content scripts run, then close it
-function openSilentTab(url, venueCode) {
-  return new Promise((resolve) => {
-    chrome.tabs.create({ url, active: false }, (tab) => {
-      if (!tab) { resolve(); return; }
+async function checkTheatre(theatreCode) {
+  const today = todayYYYYMMDD();
+  let alerts  = await watchingAlertsFor(theatreCode);
+  if (!alerts.length) return;
+  const ref = alerts.find(a => a.citySlug) || alerts[0];   // best URL source
 
-      const tabId = tab.id;
+  const { tabId } = await getCheckWindow();
 
-      // Track that this tab was opened by ShowAlert for cleanup
-      silentTabs.set(tabId, { venueCode, openedAt: Date.now() });
+  // First load: accept whichever date BMS serves (today, or a redirect target)
+  const first = await navigateAndWait(tabId, AlertCore.buildBMSUrl(ref, today), theatreCode, null);
+  if (!first && !(await checkWindowAlive())) return 'aborted';
+  if (!first) { console.log(`[ShowAlert] ${theatreCode}: no page data (timeout)`); return; }
 
-      // Close the tab after 15 seconds regardless (safety net)
-      const closeTimer = setTimeout(() => {
-        silentTabs.delete(tabId);
-        chrome.tabs.remove(tabId, () => {});
-        resolve();
-      }, 15000);
+  const showsByDate = { [first.currentDate]: first.shows || [] };
 
-      // Listen for the PAGE_SHOW_DATA message that content.js sends.
-      // When we receive it for this venue, close the tab sooner.
-      const msgListener = (msg) => {
-        if (msg.action === 'PAGE_SHOW_DATA' && msg.venueCode === venueCode) {
-          clearTimeout(closeTimer);
-          chrome.runtime.onMessage.removeListener(msgListener);
-          silentTabs.delete(tabId);
-          // Give background.js handlePageData() a moment to process first
-          setTimeout(() => {
-            chrome.tabs.remove(tabId, () => {});
-            resolve();
-          }, 800);
-        }
-      };
-      chrome.runtime.onMessage.addListener(msgListener);
+  alerts = await watchingAlertsFor(theatreCode);
+  const toVisit = AlertCore.datesToVisit(alerts, first.availableDates || [], today)
+    .filter(d => d !== first.currentDate);
+  console.log(`[ShowAlert] ${theatreCode}: open dates ${JSON.stringify(first.availableDates)} → visiting ${JSON.stringify(toVisit)}`);
+
+  for (const date of toVisit) {
+    const data = await navigateAndWait(tabId, AlertCore.buildBMSUrl(ref, date), theatreCode, date);
+    if (!data && !(await checkWindowAlive())) return 'aborted';
+    if (data) showsByDate[date] = data.shows || [];
+    else console.log(`[ShowAlert] ${theatreCode}: ${date} not served (redirect or timeout)`);
+  }
+
+  // Re-read: user may have paused/stopped/deleted alerts during the walk
+  for (const alert of await watchingAlertsFor(theatreCode)) {
+    await updateAlert(alert.id, { lastChecked: Date.now() });
+    const found = AlertCore.collectNewDates(alert, showsByDate, today);
+    if (found.length) await notifyAlert(alert.id, found);
+  }
+}
+
+// Navigate the check tab and wait for its PAGE_SHOW_DATA for this theatre.
+// expectedDate null = accept any date; otherwise a different date (redirect) → null.
+// Data from another theatre (a late post from the previous page) is ignored.
+function navigateAndWait(tabId, url, expectedVenue, expectedDate, timeoutMs = PER_DATE_TIMEOUT_MS) {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => { waiters.delete(tabId); resolve(null); }, timeoutMs);
+    waiters.set(tabId, { expectedVenue, expectedDate, resolve, timer });
+    chrome.tabs.update(tabId, { url }).catch(() => {
+      clearTimeout(timer); waiters.delete(tabId); resolve(null);
     });
   });
 }
 
-// Track silent tabs so we can clean up on restart
-const silentTabs = new Map();
+function resolveWaiter(tabId, data) {
+  const w = waiters.get(tabId);
+  if (!w) return;
+  const verdict = AlertCore.waiterVerdict(w, data);
+  if (verdict === 'ignore') return;            // stale page of another theatre — keep waiting
+  clearTimeout(w.timer);
+  waiters.delete(tabId);
+  w.resolve(verdict === 'accept' ? data : null);
+}
+
+function resolveAllWaiters() {
+  for (const tabId of [...waiters.keys()]) {
+    const w = waiters.get(tabId);
+    clearTimeout(w.timer);
+    waiters.delete(tabId);
+    w.resolve(null);
+  }
+}
+
+// ── Check window (minimized, never focused) ──────────────────
+async function getCheckWindow() {
+  const { checkWindow } = await chrome.storage.session.get('checkWindow');
+  if (checkWindow) {
+    try {
+      await chrome.windows.get(checkWindow.windowId);
+      await chrome.tabs.get(checkWindow.tabId);
+      checkWindowId = checkWindow.windowId;
+      return checkWindow;
+    } catch (_) { /* gone — create a new one */ }
+  }
+  const win = await chrome.windows.create({ url: 'about:blank', state: 'minimized', focused: false });
+  const cw  = { windowId: win.id, tabId: win.tabs[0].id };
+  checkWindowId = cw.windowId;
+  await chrome.storage.session.set({ checkWindow: cw });
+  return cw;
+}
+
+async function checkWindowAlive() {
+  if (checkWindowClosed || checkWindowId == null) return false;
+  try { await chrome.windows.get(checkWindowId); return true; } catch (_) { return false; }
+}
+
+async function closeCheckWindow() {
+  checkWindowId = null;             // our own close must not count as "user closed it"
+  const { checkWindow } = await chrome.storage.session.get('checkWindow');
+  if (!checkWindow) return;
+  await chrome.storage.session.remove('checkWindow');
+  try { await chrome.windows.remove(checkWindow.windowId); } catch (_) { /* already closed */ }
+}
+
+async function isCheckTab(tabId) {
+  if (tabId == null) return false;
+  const { checkWindow } = await chrome.storage.session.get('checkWindow');
+  return checkWindow?.tabId === tabId;
+}
+
+chrome.windows.onRemoved.addListener(async windowId => {
+  if (windowId !== checkWindowId) return;   // not ours, or we closed it ourselves
+  checkWindowClosed = true;                 // set synchronously, before any await
+  checkWindowId = null;
+  resolveAllWaiters();
+  await chrome.storage.session.remove('checkWindow');
+});
+
+// ── Cycle lock (survives worker restarts via storage.session) ─
+async function acquireLock() {
+  const { cycleLock } = await chrome.storage.session.get('cycleLock');
+  if (cycleLock && Date.now() - cycleLock.startedAt < LOCK_STALE_MS) return false;
+  await chrome.storage.session.set({ cycleLock: { startedAt: Date.now() } });
+  return true;
+}
+async function refreshLock() { await chrome.storage.session.set({ cycleLock: { startedAt: Date.now() } }); }
+async function releaseLock() { await chrome.storage.session.remove('cycleLock'); }
 
 function todayYYYYMMDD() {
   const d = new Date();
@@ -363,141 +339,68 @@ function todayYYYYMMDD() {
   return `${y}${m}${day}`;
 }
 
-async function tryApiPoll(alert) {
-  // Direct API call — kept as best-effort fallback only.
-  // Usually blocked by Cloudflare from service worker context.
-  try {
-    const shows = await fetchBMSShows(alert.theatreCode, alert.date);
-    if (shows.length > 0) {
-      await updateAlertField(alert.id, { lastChecked: Date.now() });
-      await fireNotification(alert, shows);
-    }
-  } catch (e) {
-    // Expected — Cloudflare blocks service worker requests
-  }
-}
-
-// ═════════════════════════════════════════════════════════════
-// BMS API FETCH (best-effort, often blocked by Cloudflare)
-// ═════════════════════════════════════════════════════════════
-async function fetchBMSShows(theatreCode, date) {
-  const { bmsTokens = {} } = await chrome.storage.local.get('bmsTokens');
-  const token      = bmsTokens.bmsApiToken || '26x3aab5x746514b3b7b';
-  const bmsId      = bmsTokens.bmsId       || '';
-  const regionCode = bmsTokens.regionCode  || 'HYD';
-
-  const params = new URLSearchParams({
-    venueCode:  theatreCode,
-    dateCode:   date,
-    regionCode,
-    appCode:    'WEBV2',
-    token,
-    bmsId,
-    lsId:       '',
-    memberId:   '',
-    vc:         theatreCode
-  });
-
-  const url = `https://in.bookmyshow.com/api/venue-showtimes-functional/getShowtimesByVenue?${params}`;
-
-  let res;
-  try {
-    res = await fetch(url, {
-      headers: {
-        'Accept':          'application/json, */*',
-        'Accept-Language': 'en-IN,en;q=0.9',
-        'Origin':          'https://in.bookmyshow.com',
-        'Referer':         'https://in.bookmyshow.com/',
-        'X-Access-Token':  '67x1xa33315o185e'
-      }
-    });
-  } catch (e) {
-    throw new Error(`Network: ${e.message}`);
-  }
-
-  if (res.status === 429) throw new Error('Rate limited');
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-  const ct = res.headers.get('content-type') || '';
-  if (!ct.includes('json')) throw new Error('Cloudflare HTML response (no cookies in service worker)');
-
-  const data = await res.json();
-  return parseVenueShowtimes(data);
-}
-
-function parseVenueShowtimes(data) {
-  const shows = [];
-  const root   = data?.data || data;
-  const events = root?.showDetailsTransformed?.Event || root?.Event || [];
-
-  for (const event of (Array.isArray(events) ? events : [])) {
-    const movieTitle = event.EventTitle || 'Unknown';
-    for (const child of (event.ChildEvents || [])) {
-      const language  = child.EventLanguage  || '';
-      const dimension = child.EventDimension || '2D';
-      for (const slot of (child.ShowTimes || [])) {
-        const avail = String(slot.AvailStatus ?? '0');
-        if (avail === '0') continue;
-        shows.push({
-          movieTitle,
-          time:     slot.ShowTime   || '',
-          format:   slot.Attributes || dimension,
-          language,
-          screen:   slot.ScreenName || '',
-          minPrice: slot.MinPrice   || '',
-          maxPrice: slot.MaxPrice   || '',
-          status:   (avail === '1' || avail === '2') ? 'fast_filling' : 'available'
-        });
-      }
-    }
-  }
-  return shows;
-}
-
 // ═════════════════════════════════════════════════════════════
 // DESKTOP NOTIFICATION
 // ═════════════════════════════════════════════════════════════
-async function sendDesktopNotification(alert, shows, dateJustOpened = false) {
-  const movies   = [...new Set(shows.map(s => s.movieTitle).filter(t => t !== 'Shows now available'))];
-  const filling  = shows.filter(s => s.status === 'fast_filling').length;
-  const avail    = shows.filter(s => s.status === 'available').length;
-  const timeList = shows.slice(0, 3)
-    .map(s => s.time ? `${s.time}${s.format ? ' [' + s.format + ']' : ''}` : '')
-    .filter(Boolean).join('  ');
+function screenLabel(alert) { return (alert.screenFilter || '').trim().toUpperCase(); }
 
-  let message;
-  if (dateJustOpened) {
-    message = `Booking just opened for ${formatDate(alert.date)}!\nOpen BMS to see all shows.`;
-  } else {
-    const status = filling > 0
-      ? `⚡ ${filling} filling fast · ${avail} available`
-      : `✅ ${avail} show(s) available`;
-    message = `${movies.slice(0, 3).join(', ') || 'Shows available'}\n${timeList}\n${status}`.trim();
-  }
+function timesOf(shows, n) {
+  return shows.slice(0, n).map(AlertCore.describeShowTime).filter(Boolean).join(', ');
+}
 
-  chrome.notifications.create(`showalert_${alert.id}`, {
-    type:     'basic',
-    iconUrl:  'icons/icon128.png',
-    title:    `🎬 Tickets Open! – ${alert.theatreName}`,
-    message,
-    priority: 2,
-    buttons:  [{ title: '🎟️ Book Now on BookMyShow' }]
+async function sendDesktopNotification(alert, found) {
+  const screen = screenLabel(alert);
+  const title  = screen
+    ? `🎬 ${screen} open – ${alert.theatreName}`
+    : `🎬 Tickets Open! – ${alert.theatreName}`;
+
+  const lines = found.slice(0, 4).map(f => {
+    const movie = alert.movieFilter?.trim() || f.shows[0]?.movieTitle || 'Shows';
+    return [movie, formatDate(f.date), timesOf(f.shows, 3)].filter(Boolean).join(' · ');
   });
+  if (found.length > 4) lines.push(`+${found.length - 4} more dates`);
 
-  chrome.notifications.onButtonClicked.addListener((notifId, btnIdx) => {
-    if (notifId !== `showalert_${alert.id}` || btnIdx !== 0) return;
-    const city = (alert.city || '').toLowerCase().replace(/\s+/g, '-');
-    const slug = (alert.theatreSlug || alert.theatreName || '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    chrome.tabs.create({
-      url: `https://in.bookmyshow.com/cinemas/${city}/${slug}/buytickets/${alert.theatreCode}/${alert.date}`
-    });
+  const buttons = [{ title: '🎟️ Book Now' }];
+  if (alert.status === 'watching') buttons.push({ title: '🛑 Stop this alert' });
+
+  chrome.notifications.create(AlertCore.notificationId(alert.id, found[0].date), {
+    type: 'basic', iconUrl: 'icons/icon128.png',
+    title, message: lines.join('\n'), priority: 2, buttons
   });
 }
+
+// One listener for all notifications (ids encode alert + date)
+async function openBookingFor(notifId) {
+  const p = AlertCore.parseNotificationId(notifId);
+  if (!p) return;
+  const alert = (await getAlerts()).find(a => a.id === p.alertId);
+  if (alert) chrome.tabs.create({ url: AlertCore.buildBMSUrl(alert, p.date) });
+}
+
+chrome.notifications.onButtonClicked.addListener(async (notifId, btnIdx) => {
+  const p = AlertCore.parseNotificationId(notifId);
+  if (!p) return;
+  if (btnIdx === 0) {
+    await openBookingFor(notifId);
+  } else if (btnIdx === 1) {
+    await updateAlert(p.alertId, { status: 'done' });
+    chrome.notifications.clear(notifId);
+    console.log(`[ShowAlert] Alert ${p.alertId} stopped from notification`);
+  }
+});
+
+chrome.notifications.onClicked.addListener(openBookingFor);
 
 // ═════════════════════════════════════════════════════════════
 // EMAIL NOTIFICATION (multi-provider, all free)
 // ═════════════════════════════════════════════════════════════
-async function sendEmailNotification(alert, shows) {
+function showLine(s) {
+  const when = AlertCore.describeShowTime(s);
+  return [s.movieTitle, when && `@ ${when}`, s.screen && `· ${s.screen}`,
+          s.format && `[${s.format}]`, s.language && `· ${s.language}`].filter(Boolean).join(' ');
+}
+
+async function sendEmailNotification(alert, found) {
   const settings = await getSettings();
   const { email, emailProvider, emailApiKey } = settings;
   if (!emailProvider || !emailApiKey) {
@@ -505,18 +408,23 @@ async function sendEmailNotification(alert, shows) {
     return;
   }
 
-  const movies    = [...new Set(shows.map(s => s.movieTitle).filter(t => t !== 'Shows now available'))];
-  const timeslots = shows.slice(0, 10).map(s =>
-    [s.movieTitle, s.time && `@ ${s.time}`, s.format && `[${s.format}]`, s.language && `· ${s.language}`]
-      .filter(Boolean).join(' ')
-  );
-  const slug    = (alert.theatreSlug || alert.theatreName || '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  const city    = (alert.city || '').toLowerCase().replace(/\s+/g, '-');
-  const bmsLink = `https://in.bookmyshow.com/cinemas/${city}/${slug}/buytickets/${alert.theatreCode}/${alert.date}`;
+  const screen   = screenLabel(alert);
+  const dateList = found.map(f => formatDate(f.date)).join(', ');
+  const subject  = `🎬 ${screen || 'Tickets'} open · ${alert.theatreName} · ${dateList}`;
+  const sections = found.map(f => ({
+    date:  f.date,
+    link:  AlertCore.buildBMSUrl(alert, f.date),
+    lines: f.shows.slice(0, 10).map(showLine)
+  }));
 
-  const subject  = `🎬 Tickets Open! ${alert.theatreName} · ${formatDate(alert.date)}`;
-  const htmlBody = buildEmailHtml(alert, movies, timeslots, bmsLink);
-  const textBody = `Tickets are now available!\n\nTheatre: ${alert.theatreName}\nCity: ${alert.city}\nDate: ${formatDate(alert.date)}\n\nShows:\n${timeslots.join('\n')}\n\nBook: ${bmsLink}`;
+  const htmlBody = buildEmailHtml(alert, sections);
+  const textBody = [
+    'Tickets are now available!', '',
+    `Theatre: ${alert.theatreName}`, `City: ${alert.city}`,
+    screen ? `Screen: ${screen}` : null,
+    alert.movieFilter ? `Movie: ${alert.movieFilter}` : null, '',
+    ...sections.flatMap(s => [`${formatDate(s.date)}:`, ...s.lines, `Book: ${s.link}`, ''])
+  ].filter(l => l !== null).join('\n');
 
   try {
     switch (emailProvider) {
@@ -571,28 +479,39 @@ async function sendViaMailjet(apiKey, secretKey, to, subject, html, text) {
   console.log('[ShowAlert] ✅ Email sent via Mailjet');
 }
 
-function buildEmailHtml(alert, movies, timeslots, bmsLink) {
-  const rows = timeslots.map(s =>
-    `<tr><td style="padding:9px 14px;border-bottom:1px solid #2a2a38;font-size:13px;color:#b0adb8">${s}</td></tr>`
-  ).join('');
+function escHtml(s) { return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+function buildEmailHtml(alert, sections) {
+  const infoRow = (label, value, last) =>
+    `<tr><td style="padding:10px 14px;${last ? '' : 'border-bottom:1px solid #2a2a38'}"><div style="font-size:10px;text-transform:uppercase;color:#6a6a80;margin-bottom:3px">${label}</div><div style="font-size:14px;font-weight:600;color:#f0eee8">${escHtml(value)}</div></td></tr>`;
+  const info = [['Theatre', alert.theatreName], ['City', alert.city]];
+  if (alert.screenFilter) info.push(['Screen', screenLabel(alert)]);
+  if (alert.movieFilter)  info.push(['Movie', alert.movieFilter]);
+  const infoRows = info.map(([l, v], i) => infoRow(l, v, i === info.length - 1)).join('');
+
+  const dateSections = sections.map(s => {
+    const rows = s.lines.map(l =>
+      `<tr><td style="padding:9px 14px;border-bottom:1px solid #2a2a38;font-size:13px;color:#b0adb8">${escHtml(l)}</td></tr>`
+    ).join('');
+    return `<div style="font-size:11px;text-transform:uppercase;color:#6a6a80;margin-bottom:10px">${escHtml(formatDate(s.date))}</div>
+<table style="width:100%;border-collapse:collapse;background:#1c1c22;border:1px solid #2a2a38;border-radius:10px;overflow:hidden;margin-bottom:10px">${rows}</table>
+<a href="${s.link}" style="display:block;background:#e8003d;color:#fff;text-align:center;padding:12px;border-radius:10px;text-decoration:none;font-weight:700;font-size:14px;margin-bottom:20px">🎟️ Book ${escHtml(formatDate(s.date))} on BookMyShow →</a>`;
+  }).join('');
+
+  const heading = screenLabel(alert) ? `${screenLabel(alert)} Is Now Open!` : 'Tickets Are Now Open!';
+
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
 <body style="margin:0;padding:0;background:#0a0a0c;font-family:-apple-system,'Segoe UI',sans-serif">
 <div style="max-width:520px;margin:0 auto;padding:20px">
 <div style="background:linear-gradient(135deg,#1c0810,#0d0d14);border:1px solid #2a2a38;border-radius:16px;overflow:hidden">
 <div style="background:#e8003d;padding:24px;text-align:center">
 <div style="font-size:2rem;margin-bottom:8px">🎬</div>
-<h1 style="margin:0;color:#fff;font-size:1.3rem;font-weight:700">Tickets Are Now Open!</h1>
+<h1 style="margin:0;color:#fff;font-size:1.3rem;font-weight:700">${escHtml(heading)}</h1>
 <p style="margin:6px 0 0;color:rgba(255,255,255,0.85);font-size:13px">BookMyShow · ShowAlert</p>
 </div>
 <div style="padding:24px">
-<table style="width:100%;border-collapse:collapse;background:#1c1c22;border:1px solid #2a2a38;border-radius:10px;overflow:hidden;margin-bottom:20px">
-<tr><td style="padding:10px 14px;border-bottom:1px solid #2a2a38"><div style="font-size:10px;text-transform:uppercase;color:#6a6a80;margin-bottom:3px">Theatre</div><div style="font-size:14px;font-weight:600;color:#f0eee8">${alert.theatreName}</div></td></tr>
-<tr><td style="padding:10px 14px;border-bottom:1px solid #2a2a38"><div style="font-size:10px;text-transform:uppercase;color:#6a6a80;margin-bottom:3px">City</div><div style="font-size:14px;font-weight:600;color:#f0eee8">${alert.city}</div></td></tr>
-<tr><td style="padding:10px 14px"><div style="font-size:10px;text-transform:uppercase;color:#6a6a80;margin-bottom:3px">Date</div><div style="font-size:14px;font-weight:600;color:#f0eee8">${formatDate(alert.date)}</div></td></tr>
-</table>
-<div style="font-size:11px;text-transform:uppercase;color:#6a6a80;margin-bottom:10px">Available Shows</div>
-<table style="width:100%;border-collapse:collapse;background:#1c1c22;border:1px solid #2a2a38;border-radius:10px;overflow:hidden;margin-bottom:20px">${rows}</table>
-<a href="${bmsLink}" style="display:block;background:#e8003d;color:#fff;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px">🎟️ Book Now on BookMyShow →</a>
+<table style="width:100%;border-collapse:collapse;background:#1c1c22;border:1px solid #2a2a38;border-radius:10px;overflow:hidden;margin-bottom:20px">${infoRows}</table>
+${dateSections}
 </div>
 <div style="padding:14px 24px;border-top:1px solid #2a2a38;text-align:center;font-size:11px;color:#6a6a80">Sent by ShowAlert · Not affiliated with BookMyShow</div>
 </div></div></body></html>`;
@@ -601,11 +520,27 @@ function buildEmailHtml(alert, movies, timeslots, bmsLink) {
 // ═════════════════════════════════════════════════════════════
 // STORAGE HELPERS
 // ═════════════════════════════════════════════════════════════
-async function getSettings()    { const { settings = {} } = await chrome.storage.local.get('settings'); return settings; }
-async function getAlerts()      { const { alerts = [] }   = await chrome.storage.local.get('alerts');   return alerts; }
-async function getNotifiedMap() { const { notifiedMap = {} } = await chrome.storage.local.get('notifiedMap'); return notifiedMap; }
+async function getSettings() { const { settings = {} } = await chrome.storage.local.get('settings'); return settings; }
 
-async function updateAlertField(id, fields) {
+// Always returns normalized alerts; persists the migration if anything changed.
+async function getAlerts() {
+  const { alerts = [] } = await chrome.storage.local.get('alerts');
+  const normalized = alerts.map(AlertCore.normalizeAlert);
+  if (JSON.stringify(normalized) !== JSON.stringify(alerts)) {
+    await chrome.storage.local.set({ alerts: normalized });
+  }
+  return normalized;
+}
+
+// All alert writes in the worker go through this queue (read-modify-write is atomic here).
+const alertQueue = AlertCore.createSerialQueue();
+
+function updateAlert(id, fields) {
+  return alertQueue(() => writeAlertFields(id, fields));
+}
+
+// Only call from inside alertQueue.
+async function writeAlertFields(id, fields) {
   const alerts = await getAlerts();
   const idx    = alerts.findIndex(a => a.id === id);
   if (idx === -1) return;

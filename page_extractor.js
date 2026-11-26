@@ -33,27 +33,18 @@
       // BMS stores it under venueShowtimesFunctionalApi.queries
       // The key is like "getShowtimesByVenue-ACEV-20260318"
       const queries = state?.venueShowtimesFunctionalApi?.queries ?? {};
-      let qdata = null;
-      let apiToken = '', bmsId = '', regionCode = 'HYD';
-
-      for (const key of Object.keys(queries)) {
-        const q = queries[key];
-        // Find a fulfilled query with data
-        if (q?.status === 'fulfilled' && q?.data) {
-          qdata = q.data;
-          const args = q.originalArgs ?? {};
-          apiToken   = args.token      ?? '';
-          bmsId      = args.bmsId      ?? '';
-          regionCode = args.regionCode ?? 'HYD';
-          console.log('[ShowAlert/page] Found query key:', key);
-          break;
-        }
-      }
-
-      if (!qdata) {
-        console.warn('[ShowAlert/page] No fulfilled query data found in venueShowtimesFunctionalApi');
+      // Only this page's date — another date's data must never be reported
+      // as this date (would cause false alerts and hide the real opening).
+      const hit = window.AlertCore.selectShowtimesQuery(queries, currentDate);
+      if (!hit) {
+        console.warn('[ShowAlert/page] No showtimes query for date', currentDate, '— not reporting');
         return false;
       }
+      console.log('[ShowAlert/page] Found query key:', hit.key);
+      const qdata      = hit.data;
+      const apiToken   = hit.args.token      ?? '';
+      const bmsId      = hit.args.bmsId      ?? '';
+      const regionCode = hit.args.regionCode ?? 'HYD';
 
       // ── Parse shows from Event array ──────────────────────────
       const shows = [];
@@ -72,7 +63,8 @@
             shows.push({
               movieTitle,
               time:     slot.ShowTime    ?? '',
-              format:   slot.Attributes  ?? dimension,
+              format:   slot.Attributes || dimension,
+              dimension,
               language,
               screen:   slot.ScreenName  ?? '',
               minPrice: slot.MinPrice    ?? '',
@@ -102,9 +94,12 @@
         venueCode,
         theatreName:    toTitleCase(theatreSlug.replace(/-/g, ' ')),
         theatreSlug,
+        citySlug,
         city:           toTitleCase(citySlug.replace(/-/g, ' ')),
         currentDate,
         shows,
+        screens:        uniq(shows.flatMap(s => [s.screen, s.format, s.dimension])),
+        movies:         uniq(shows.map(s => s.movieTitle)),
         availableDates,
         allDates,
         tokens: { bmsApiToken: apiToken, bmsId, regionCode }
@@ -118,6 +113,10 @@
       console.error('[ShowAlert/page] Parse error:', e.message);
       return false;
     }
+  }
+
+  function uniq(arr) {
+    return [...new Set(arr.map(v => String(v ?? '').trim()).filter(Boolean))];
   }
 
   function toTitleCase(s) {

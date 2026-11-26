@@ -105,8 +105,30 @@
         <input type="text" id="manualCity" placeholder="e.g. Hyderabad" />
       </div>
       <div class="field">
-        <label>Date <span class="field-hint-sm">(YYYYMMDD)</span></label>
+        <label>Screen / format <span class="opt-badge">optional</span></label>
+        <input type="text" id="manualScreen" list="manualScreenList" placeholder="e.g. PCX, EPIC, IMAX" autocomplete="off" />
+        <datalist id="manualScreenList"></datalist>
+      </div>
+      <div class="field">
+        <label>Movie <span class="opt-badge">optional</span></label>
+        <input type="text" id="manualMovie" list="manualMovieList" placeholder="e.g. Doomsday" autocomplete="off" />
+        <datalist id="manualMovieList"></datalist>
+      </div>
+      <div class="field">
+        <label>Date</label>
+        <div class="radio-row">
+          <label class="radio"><input type="radio" name="manualDateMode" value="any" /> Any date</label>
+          <label class="radio"><input type="radio" name="manualDateMode" value="single" checked /> Specific date</label>
+        </div>
         <input type="date" id="manualDate" />
+      </div>
+      <div class="field">
+        <label>Notify me</label>
+        <div class="radio-row">
+          <label class="radio"><input type="radio" name="manualNotifyMode" value="every" /> Every new date</label>
+          <label class="radio"><input type="radio" name="manualNotifyMode" value="once" checked /> Once</label>
+          <label class="radio"><input type="radio" name="manualNotifyMode" value="limit" /> Stop after <input type="number" id="manualLimit" class="limit-input" min="1" value="3" /> notifications</label>
+        </div>
       </div>
       <button class="btn-primary btn-full" id="btnAddManual">+ Add Alert</button>
     </div>
@@ -172,14 +194,38 @@
         </div>
       </div>
 
-      <!-- Only ask for date -->
-      <div class="field" style="margin-top:14px">
-        <label>Pick Alert Date</label>
-        <input type="date" id="modalDate" />
+      <!-- What to watch -->
+      <div class="alert-form" style="margin-top:14px">
+        <div class="field">
+          <label>Screen / format <span class="opt-badge">optional</span></label>
+          <input type="text" id="modalScreen" list="modalScreenList" placeholder="e.g. PCX, EPIC, IMAX" autocomplete="off" />
+          <datalist id="modalScreenList"></datalist>
+        </div>
+        <div class="field">
+          <label>Movie <span class="opt-badge">optional</span></label>
+          <input type="text" id="modalMovie" list="modalMovieList" placeholder="e.g. Doomsday" autocomplete="off" />
+          <datalist id="modalMovieList"></datalist>
+        </div>
+        <div class="field">
+          <label>Date</label>
+          <div class="radio-row">
+            <label class="radio"><input type="radio" name="modalDateMode" value="any" /> Any date</label>
+            <label class="radio"><input type="radio" name="modalDateMode" value="single" checked /> Specific date</label>
+          </div>
+          <input type="date" id="modalDate" />
+        </div>
+        <div class="field">
+          <label>Notify me</label>
+          <div class="radio-row">
+            <label class="radio"><input type="radio" name="modalNotifyMode" value="every" /> Every new date</label>
+            <label class="radio"><input type="radio" name="modalNotifyMode" value="once" checked /> Once</label>
+            <label class="radio"><input type="radio" name="modalNotifyMode" value="limit" /> Stop after <input type="number" id="modalLimit" class="limit-input" min="1" value="3" /> notifications</label>
+          </div>
+        </div>
       </div>
 
       <div class="modal-note">
-        🔔 You'll get a Chrome notification + email the instant shows go live on this date.
+        🔔 You'll get a Chrome notification + email the instant matching shows go live.
       </div>
 
       <button class="btn-primary btn-full" id="btnConfirmAlert">Activate Alert →</button>
@@ -264,6 +310,7 @@
 <!-- TOAST -->
 <div id="toast" class="toast hidden"></div>
 
+<script src="alert_core.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>

@@ -668,3 +668,30 @@ body {
 }
 .toast.success { border-color: rgba(0,229,160,0.35); color: var(--green); }
 .toast.error   { border-color: rgba(232,0,61,0.35); color: var(--red); }
+
+/* ── ALERT FORM: radios, limit, screen/movie ── */
+.radio-row { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 7px; }
+.field label.radio {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin: 0; font-size: 12px; font-weight: 400;
+  text-transform: none; letter-spacing: 0; color: var(--text2); cursor: pointer;
+}
+.field label.radio input[type="radio"] {
+  width: auto; padding: 0; margin: 0; appearance: auto;
+  accent-color: var(--red); box-shadow: none; cursor: pointer;
+}
+.field input.limit-input { width: 52px; padding: 2px 6px; display: inline-block; text-align: center; }
+.field input:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── ALERT LIST: statuses + pause ── */
+.alert-dot.watching { background: var(--green); }
+.alert-dot.paused   { background: var(--muted); animation: none; }
+.alert-dot.done     { background: var(--gold); animation: none; }
+.alert-status.paused { background: rgba(106,106,128,0.12); color: var(--text2); border: 1px solid var(--border2); }
+.alert-status.done   { background: rgba(245,200,66,0.1); color: var(--gold); border: 1px solid rgba(245,200,66,0.2); }
+.alert-found { color: var(--gold); }
+.pause-btn {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 12px; padding: 2px 4px; border-radius: 4px; line-height: 1; transition: all 0.15s;
+}
+.pause-btn:hover { background: rgba(255,255,255,0.06); color: var(--text); }

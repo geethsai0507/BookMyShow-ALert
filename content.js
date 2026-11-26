@@ -28,9 +28,11 @@
       safeSet({ bmsTokens: d.tokens });
     }
 
-    // Save page context for popup
+    // Save page context for popup (incl. screen/movie suggestions for this theatre)
     const info = parseUrl(location.href);
-    if (info) safeSet({ lastBMSPage: info });
+    if (info && info.theatreCode === d.venueCode) {
+      safeSet({ lastBMSPage: { ...info, screens: d.screens ?? [], movies: d.movies ?? [] } });
+    }
 
     // Forward to background for alert matching
     safeSend({
@@ -38,11 +40,14 @@
       venueCode:      d.venueCode,
       theatreName:    d.theatreName,
       theatreSlug:    d.theatreSlug,
+      citySlug:       d.citySlug,
       city:           d.city,
       currentDate:    d.currentDate,
       shows:          d.shows          ?? [],
       availableDates: d.availableDates  ?? [],
-      allDates:       d.allDates        ?? []
+      allDates:       d.allDates        ?? [],
+      screens:        d.screens         ?? [],
+      movies:         d.movies          ?? []
     });
   });
 
@@ -78,7 +83,9 @@
         return;
       }
       try {
-        await chrome.storage.local.set({ lastBMSPage: info });
+        const { lastBMSPage: prev } = await chrome.storage.local.get('lastBMSPage');
+        const keep = prev?.theatreCode === info.theatreCode ? { screens: prev.screens, movies: prev.movies } : {};
+        await chrome.storage.local.set({ lastBMSPage: { ...info, ...keep } });
         safeSend({ action: 'BMS_PAGE_CONTEXT', ...info });
         showToast('✅', `<strong>ShowAlert ready!</strong><br>Open the extension popup and click <em>Notify Me</em>.`);
       } catch (e) {
@@ -122,6 +129,7 @@
     const [, citySlug, theatreSlug, theatreCode, date] = m;
     return {
       city: toTitleCase(citySlug.replace(/-/g, ' ')),
+      citySlug,
       theatreSlug,
       theatreCode,
       theatreName: toTitleCase(theatreSlug.replace(/-/g, ' ')),
