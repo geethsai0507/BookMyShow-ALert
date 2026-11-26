@@ -150,7 +150,15 @@
     };
   }
 
+  // BMS colours: green = available, orange = filling fast (sold out is never stored).
+  const AVAILABILITY = { available: '🟢 available', fast_filling: '🟠 filling fast' };
+
+  function describeShowTime(show) {
+    return [show.time, AVAILABILITY[show.status]].filter(Boolean).join(' ');
+  }
+
   const AlertCore = {
+    describeShowTime,
     normalizeAlert, showMatches, matchingShows, alertKey,
     buildBMSUrl, notificationId, parseNotificationId,
     datesToVisit, collectNewDates, applyNotification,

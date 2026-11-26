@@ -245,3 +245,10 @@ test('real Prasads data 2026-12-18: combined label "Infinity Vision 3D/PCX Scree
   const a = W({ dateMode: 'any', screenFilter: 'PCX', movieFilter: 'Doomsday' });
   assert.deepEqual(C.collectNewDates(a, { '20261218': [show] }, '20261126'), [{ date: '20261218', shows: [show] }]);
 });
+
+test('describeShowTime tags availability with colour and words', () => {
+  assert.equal(C.describeShowTime({ time: '08:00 AM', status: 'fast_filling' }), '08:00 AM 🟠 filling fast');
+  assert.equal(C.describeShowTime({ time: '11:05 AM', status: 'available' }), '11:05 AM 🟢 available');
+  assert.equal(C.describeShowTime({ time: '', status: 'available' }), '🟢 available');
+  assert.equal(C.describeShowTime({ time: '09:00 PM' }), '09:00 PM');
+});

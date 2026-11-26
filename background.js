@@ -345,7 +345,7 @@ function todayYYYYMMDD() {
 function screenLabel(alert) { return (alert.screenFilter || '').trim().toUpperCase(); }
 
 function timesOf(shows, n) {
-  return shows.slice(0, n).map(s => s.time).filter(Boolean).join(', ');
+  return shows.slice(0, n).map(AlertCore.describeShowTime).filter(Boolean).join(', ');
 }
 
 async function sendDesktopNotification(alert, found) {
@@ -395,7 +395,8 @@ chrome.notifications.onClicked.addListener(openBookingFor);
 // EMAIL NOTIFICATION (multi-provider, all free)
 // ═════════════════════════════════════════════════════════════
 function showLine(s) {
-  return [s.movieTitle, s.time && `@ ${s.time}`, s.screen && `· ${s.screen}`,
+  const when = AlertCore.describeShowTime(s);
+  return [s.movieTitle, when && `@ ${when}`, s.screen && `· ${s.screen}`,
           s.format && `[${s.format}]`, s.language && `· ${s.language}`].filter(Boolean).join(' ');
 }
 
