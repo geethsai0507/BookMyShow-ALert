@@ -219,3 +219,23 @@ test('isDateCode accepts only 8 digits; collectNewDates ignores malformed dates'
 test('showMatches also checks the dimension field (M4)', () => {
   assert.equal(C.showMatches({ screen: 'Screen 3', format: '', dimension: 'PCX', movieTitle: 'X' }, { screenFilter: 'pcx', movieFilter: '' }), true);
 });
+
+// ── Real Prasads (PRHN) data, 2026-12-17: PCX label lives in Attributes ──
+const prasads = [
+  ['Avengers: Doomsday', 'SCREEN 5', '', '2D'],
+  ['Avengers: Doomsday', 'SCREEN 3', 'Infinity Vision 3D', 'MS-Infinity Vsn 3d'],
+  ['Avengers: Doomsday', 'SCREEN 1', 'Infinity Vision 3D', 'MS-Infinity Vsn 3d'],
+  ['Dune: Part Three',   'SCREEN 4', '', 'HDR By Barco'],
+  ['Dune: Part Three',   'SCREEN 6', 'PCX Screen', '2D']
+].map(([movieTitle, screen, attr, dimension]) => ({ movieTitle, screen, format: attr || dimension, dimension }));
+
+test('real Prasads data: Doomsday + PCX does not fire while PCX only plays Dune', () => {
+  const a = W({ dateMode: 'any', screenFilter: 'PCX', movieFilter: 'Doomsday' });
+  assert.deepEqual(C.collectNewDates(a, { '20261217': prasads }, '20261126'), []);
+});
+
+test('real Prasads data: Dune + PCX fires for SCREEN 6 only', () => {
+  const a = W({ dateMode: 'any', screenFilter: 'pcx', movieFilter: 'dune' });
+  const found = C.collectNewDates(a, { '20261217': prasads }, '20261126');
+  assert.deepEqual(found.map(f => f.shows.map(s => s.screen)), [['SCREEN 6']]);
+});
