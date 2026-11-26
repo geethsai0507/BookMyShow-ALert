@@ -70,9 +70,52 @@
     return m ? { alertId: m[1], date: m[2] } : null;
   }
 
+  function isWatching(alert) { return alert.status === 'watching'; }
+  function notified(alert) { return alert.notifiedDates || []; }
+
+  // Future open dates (excluding today) that some watching alert still needs.
+  function datesToVisit(alerts, availableDates, today) {
+    const out = new Set();
+    for (const a of alerts) {
+      if (!isWatching(a)) continue;
+      for (const d of availableDates) {
+        if (d <= today || notified(a).includes(d)) continue;
+        if (a.dateMode === 'single' && d !== a.date) continue;
+        out.add(d);
+      }
+    }
+    return [...out].sort();
+  }
+
+  // Dates (>= today, not yet notified) with at least one matching show.
+  function collectNewDates(alert, showsByDate, today) {
+    if (!isWatching(alert)) return [];
+    const found = [];
+    for (const date of Object.keys(showsByDate).sort()) {
+      if (date < today || notified(alert).includes(date)) continue;
+      if (alert.dateMode === 'single' && date !== alert.date) continue;
+      const shows = matchingShows(showsByDate[date], alert);
+      if (shows.length) found.push({ date, shows });
+    }
+    return found;
+  }
+
+  // One notification covering `dates`; returns the updated alert.
+  function applyNotification(alert, dates) {
+    const a = { ...alert };
+    a.notifiedDates = [...new Set([...notified(alert), ...dates])];
+    a.notificationCount = (alert.notificationCount || 0) + 1;
+    if (a.notifyMode === 'once' ||
+        (a.notifyMode === 'limit' && a.notificationCount >= (a.maxNotifications || 1))) {
+      a.status = 'done';
+    }
+    return a;
+  }
+
   const AlertCore = {
     normalizeAlert, showMatches, matchingShows, alertKey,
-    buildBMSUrl, notificationId, parseNotificationId
+    buildBMSUrl, notificationId, parseNotificationId,
+    datesToVisit, collectNewDates, applyNotification
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = AlertCore;
