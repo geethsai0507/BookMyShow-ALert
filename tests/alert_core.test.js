@@ -239,3 +239,9 @@ test('real Prasads data: Dune + PCX fires for SCREEN 6 only', () => {
   const found = C.collectNewDates(a, { '20261217': prasads }, '20261126');
   assert.deepEqual(found.map(f => f.shows.map(s => s.screen)), [['SCREEN 6']]);
 });
+
+test('real Prasads data 2026-12-18: combined label "Infinity Vision 3D/PCX Screen" matches PCX', () => {
+  const show = { movieTitle: 'Avengers: Doomsday', screen: 'SCREEN 6', format: 'Infinity Vision 3D/PCX Screen', dimension: 'MS-Infinity Vsn 3d', time: '08:00 AM' };
+  const a = W({ dateMode: 'any', screenFilter: 'PCX', movieFilter: 'Doomsday' });
+  assert.deepEqual(C.collectNewDates(a, { '20261218': [show] }, '20261126'), [{ date: '20261218', shows: [show] }]);
+});
